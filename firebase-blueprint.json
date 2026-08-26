@@ -1,0 +1,205 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Information about the barber shop owner and their settings.",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "shopName": { "type": "string" },
+        "phone": { "type": "string" },
+        "profileImage": { "type": "string" },
+        "monthlyGoal": { "type": "number" },
+        "marketing_msg": { "type": "string" },
+        "campaign_goal": { "type": "string" },
+        "privacy_mode": { "type": "boolean" }
+      },
+      "required": ["username", "shopName"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "A client of the barber shop.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "phone": { "type": "string" },
+        "totalSpent": { "type": "number" },
+        "lastVisit": { "type": "string", "format": "date-time" },
+        "photo": { "type": "string" }
+      },
+      "required": ["id", "name", "phone"]
+    },
+    "Service": {
+      "title": "Service",
+      "description": "A service offered by the barber shop.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "duration": { "type": "number" }
+      },
+      "required": ["id", "name", "price", "duration"]
+    },
+    "Material": {
+      "title": "Material",
+      "description": "An item in the inventory.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "quantity": { "type": "number" },
+        "minQuantity": { "type": "number" },
+        "unit": { "type": "string" },
+        "supplierLink": { "type": "string" }
+      },
+      "required": ["id", "name", "quantity"]
+    },
+    "Drink": {
+      "title": "Drink",
+      "description": "A drink available for sale.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "price": { "type": "number" },
+        "stock": { "type": "number" }
+      },
+      "required": ["id", "name", "price", "stock"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "A record of a product sale.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "itemId": { "type": "string" },
+        "itemName": { "type": "string" },
+        "price": { "type": "number" },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "itemId", "itemName", "price", "date"]
+    },
+    "Appointment": {
+      "title": "Appointment",
+      "description": "A scheduled appointment.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "clientId": { "type": "string" },
+        "serviceId": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "completed": { "type": "boolean" },
+        "paid": { "type": "boolean" },
+        "finalPrice": { "type": "number" },
+        "pricePending": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "status": { "type": "string", "enum": ["confirmed", "pending", "rejected"] },
+        "clientName": { "type": "string" },
+        "clientPhone": { "type": "string" }
+      },
+      "required": ["id", "date", "time", "status"]
+    },
+    "BookingRequest": {
+      "title": "Booking Request",
+      "description": "An appointment request sent by a client.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "serviceId": { "type": "string" },
+        "date": { "type": "string", "format": "date" },
+        "time": { "type": "string" },
+        "clientName": { "type": "string" },
+        "clientPhone": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "serviceId", "date", "time", "clientName", "clientPhone", "status"]
+    },
+    "BalanceAdjustment": {
+      "title": "Balance Adjustment",
+      "description": "A manual adjustment to the balance.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "amount": { "type": "number" },
+        "reason": { "type": "string" },
+        "date": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "amount", "reason", "date"]
+    },
+    "SystemConfig": {
+      "title": "System Configuration",
+      "description": "Global system settings and versioning.",
+      "type": "object",
+      "properties": {
+        "version": { "type": "string" },
+        "updateMessage": { "type": "string" },
+        "maintenance": { "type": "boolean" }
+      },
+      "required": ["version"]
+    },
+    "Notification": {
+      "title": "Notification",
+      "description": "A notification for the user.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["info", "update", "alert"] },
+        "date": { "type": "string", "format": "date-time" },
+        "read": { "type": "boolean" }
+      },
+      "required": ["id", "title", "message", "date"]
+    }
+  },
+  "firestore": {
+    "/system/config": {
+      "schema": "SystemConfig",
+      "description": "Global system configuration."
+    },
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile and settings."
+    },
+    "/users/{userId}/clients/{clientId}": {
+      "schema": "Client",
+      "description": "List of clients for a user."
+    },
+    "/users/{userId}/services/{serviceId}": {
+      "schema": "Service",
+      "description": "List of services offered by a user."
+    },
+    "/users/{userId}/materials/{materialId}": {
+      "schema": "Material",
+      "description": "Inventory items for a user."
+    },
+    "/users/{userId}/drinks/{drinkId}": {
+      "schema": "Drink",
+      "description": "Drinks available for sale by a user."
+    },
+    "/users/{userId}/sales/{saleId}": {
+      "schema": "Sale",
+      "description": "Sales records for a user."
+    },
+    "/users/{userId}/appointments/{appointmentId}": {
+      "schema": "Appointment",
+      "description": "Appointments scheduled by a user."
+    },
+    "/users/{userId}/requests/{requestId}": {
+      "schema": "BookingRequest",
+      "description": "Requests sent by external clients."
+    },
+    "/users/{userId}/adjustments/{adjustmentId}": {
+      "schema": "BalanceAdjustment",
+      "description": "Balance adjustments for a user."
+    },
+    "/users/{userId}/notifications/{notificationId}": {
+      "schema": "Notification",
+      "description": "Notifications for a user."
+    }
+  }
+}

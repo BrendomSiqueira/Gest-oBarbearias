@@ -1,0 +1,218 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isHardcodedAdmin() {
+      return (isVerified() && (request.auth.token.email == "brendomsiqueira96@gmail.com" || request.auth.token.email == "brendomdev@gmail.com" || request.auth.token.email == "brendomdev@gmaill.com")) || (isSignedIn() && (request.auth.token.email == "admin@barbershop.com" || request.auth.token.email == "matheus@barbershop.com"));
+    }
+
+    // isAdmin helper for single document operations
+    function isAdmin() {
+      return isHardcodedAdmin() || (isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == "admin");
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}.*");
+    }
+
+    // ===============================================================
+    // Validation Blueprints
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['username', 'shopName']) &&
+             data.username is string && data.username.size() > 0 && data.username.size() < 50 &&
+             data.shopName is string && data.shopName.size() > 0 && data.shopName.size() < 100 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() < 20)) &&
+             (!('monthlyGoal' in data) || (data.monthlyGoal is number && data.monthlyGoal >= 0)) &&
+             (!('privacy_mode' in data) || (data.privacy_mode is bool));
+    }
+
+    function isValidClient(data) {
+      return data.keys().hasAll(['id', 'name', 'phone', 'totalSpent']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.phone is string && data.phone.size() > 0 && data.phone.size() < 20 &&
+             data.totalSpent is number && data.totalSpent >= 0;
+    }
+
+    function isValidService(data) {
+      return data.keys().hasAll(['id', 'name', 'price', 'duration']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.price is number && data.price >= 0 &&
+             data.duration is number && data.duration > 0;
+    }
+
+    function isValidAppointment(data) {
+      return data.keys().hasAll(['id', 'clientId', 'serviceId', 'date', 'time', 'completed', 'paid', 'finalPrice', 'status']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.clientId is string && data.serviceId is string &&
+             isValidDateString(data.date) && data.time is string &&
+             data.completed is bool && data.paid is bool &&
+             data.finalPrice is number && data.finalPrice >= 0 &&
+             (!('pricePending' in data) || data.pricePending is bool) &&
+             data.status in ['confirmed', 'pending', 'rejected'];
+    }
+
+    function isValidRequest(data) {
+      return data.keys().hasAll(['id', 'serviceId', 'date', 'time', 'clientName', 'clientPhone', 'status', 'createdAt']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.serviceId is string && isValidDateString(data.date) &&
+             data.time is string && data.clientName is string && data.clientName.size() < 100 &&
+             data.clientPhone is string && data.clientPhone.size() < 20 &&
+             data.status in ['pending', 'accepted', 'rejected'];
+    }
+
+    function isValidMaterial(data) {
+      return data.keys().hasAll(['id', 'name', 'quantity']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.name is string && data.name.size() < 100 &&
+             data.quantity is number;
+    }
+
+    function isValidDrink(data) {
+      return data.keys().hasAll(['id', 'name', 'price', 'stock']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.name is string && data.name.size() < 100 &&
+             data.price is number && data.price >= 0 &&
+             data.stock is number && data.stock >= 0;
+    }
+
+    function isValidSale(data) {
+      return data.keys().hasAll(['id', 'itemId', 'itemName', 'price', 'date']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.itemId is string && data.itemName is string &&
+             data.price is number && data.price >= 0 &&
+             isValidDateString(data.date);
+    }
+
+    function isValidAdjustment(data) {
+      return data.keys().hasAll(['id', 'amount', 'reason', 'date']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.amount is number &&
+             data.reason is string && data.reason.size() < 200 &&
+             isValidDateString(data.date);
+    }
+
+    function isValidNotification(data) {
+      return data.keys().hasAll(['id', 'title', 'message', 'date']) &&
+             data.id is string && data.id.size() < 128 &&
+             data.title is string && data.title.size() < 200 &&
+             data.message is string && data.message.size() < 2000 &&
+             isValidDateString(data.date);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    match /system/config {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /users/{userId} {
+      allow read: if true; // Public can see shop name/profile for booking
+      allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidUser(incoming()));
+      allow update: if (userId == "matheus_farias") || (isOwner(userId) || isHardcodedAdmin()) && isValidUser(incoming());
+
+      match /clients/{clientId} {
+        allow list, get: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidClient(incoming()));
+        allow update, delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /services/{serviceId} {
+        allow list, get: if true; // Public needs to see services to book
+        allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidService(incoming()));
+        allow update, delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /appointments/{appointmentId} {
+        allow list, get: if true; // Public can see slots
+        allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidAppointment(incoming()));
+        allow update, delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /requests/{requestId} {
+        allow list, get: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow create: if isValidRequest(incoming()); // Public can send requests
+        allow update, delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /materials/{materialId} {
+        allow list: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow get: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidMaterial(incoming()));
+        allow update: if (userId == "matheus_farias") || (isOwner(userId) || isHardcodedAdmin()) && isValidMaterial(incoming());
+        allow delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /drinks/{drinkId} {
+        allow list: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow get: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidDrink(incoming()));
+        allow update: if (userId == "matheus_farias") || (isOwner(userId) || isHardcodedAdmin()) && isValidDrink(incoming());
+        allow delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /sales/{saleId} {
+        allow list: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow get: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidSale(incoming()));
+        allow update: if (userId == "matheus_farias") || (isOwner(userId) || isHardcodedAdmin()) && isValidSale(incoming());
+        allow delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /adjustments/{adjustmentId} {
+        allow list: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow get: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow create: if (userId == "matheus_farias") || (isOwner(userId) && isValidAdjustment(incoming()));
+        allow update: if (userId == "matheus_farias") || (isOwner(userId) || isHardcodedAdmin()) && isValidAdjustment(incoming());
+        allow delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+
+      match /notifications/{notificationId} {
+        allow list: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow get: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+        allow create: if true; 
+        allow update: if (userId == "matheus_farias") || (isOwner(userId) || isHardcodedAdmin()) && isValidNotification(incoming());
+        allow delete: if (userId == "matheus_farias") || isOwner(userId) || isHardcodedAdmin();
+      }
+    }
+  }
+}

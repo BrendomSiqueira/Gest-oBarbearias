@@ -1,0 +1,8 @@
+{
+  "name": "Versão Final do Sistema MF v2",
+  "description": "Sistema de gestão de alto desempenho para barbearias com agendamento online inteligente, marketing por IA, controle de fidelidade e análises financeiras.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
