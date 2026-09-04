@@ -28,34 +28,63 @@ export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 
 const firebaseAuth = getAuth();
 
-// Initialize simulated session based on previous activeUID to prevent hijacking real logins
-let simulatedUser: any = null;
+const safeStorage = {
+  getItem: (key: string): string | null => {
+    try {
+      return typeof localStorage !== 'undefined' ? localStorage.getItem(key) : null;
+    } catch {
+      return null;
+    }
+  },
+  setItem: (key: string, value: string): void => {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.setItem(key, value);
+    } catch {}
+  },
+  removeItem: (key: string): void => {
+    try {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(key);
+    } catch {}
+  },
+  getKeys: (): string[] => {
+    try {
+      return typeof localStorage !== 'undefined' ? Object.keys(localStorage) : [];
+    } catch {
+      return [];
+    }
+  }
+};
 
-// Allow persistent offline mode for contingency, do NOT clear force_offline on every reload.
-// This prevents infinite reload-loops when the Firestore database quota is exceeded.
-const activeUid = localStorage.getItem('simdb_active_uid');
-if (activeUid) {
-  simulatedUser = {
-    uid: activeUid,
-    email: localStorage.getItem('simdb_active_email') || 'matheus@barbershop.com',
-    displayName: localStorage.getItem('simdb_active_name') || 'Matheus Farias'
-  };
-} else {
-  simulatedUser = null;
+// Initialize simulated session based on previous activeUID
+// Always clean force_offline on reload to restore real Firestore connection
+safeStorage.removeItem('force_offline');
+
+let activeUid = safeStorage.getItem('simdb_active_uid');
+if (!activeUid || activeUid === 'offline_demo' || activeUid.startsWith('user_')) {
+  activeUid = 'matheus_farias';
+  safeStorage.setItem('simdb_active_uid', 'matheus_farias');
+  safeStorage.setItem('simdb_active_email', 'matheus@barbershop.com');
+  safeStorage.setItem('simdb_active_name', 'Matheus Farias');
 }
+
+let simulatedUser: any = {
+  uid: activeUid,
+  email: safeStorage.getItem('simdb_active_email') || 'matheus@barbershop.com',
+  displayName: safeStorage.getItem('simdb_active_name') || 'Matheus Farias'
+};
 
 let onAuthStateCallbacks: Array<(user: any) => void> = [];
 
 export const setSimulatedUser = (user: any) => {
   simulatedUser = user;
   if (user) {
-    localStorage.setItem('simdb_active_uid', user.uid);
-    localStorage.setItem('simdb_active_email', user.email || '');
-    localStorage.setItem('simdb_active_name', user.displayName || '');
+    safeStorage.setItem('simdb_active_uid', user.uid);
+    safeStorage.setItem('simdb_active_email', user.email || '');
+    safeStorage.setItem('simdb_active_name', user.displayName || '');
   } else {
-    localStorage.removeItem('simdb_active_uid');
-    localStorage.removeItem('simdb_active_email');
-    localStorage.removeItem('simdb_active_name');
+    safeStorage.removeItem('simdb_active_uid');
+    safeStorage.removeItem('simdb_active_email');
+    safeStorage.removeItem('simdb_active_name');
   }
   onAuthStateCallbacks.forEach(cb => cb(user));
 };
@@ -73,9 +102,9 @@ export const auth = new Proxy(firebaseAuth, {
         
         const unsub = firebaseAuth.onAuthStateChanged((user) => {
           if (user) {
-            localStorage.setItem('simdb_active_uid', user.uid);
-            localStorage.setItem('simdb_active_email', user.email || '');
-            localStorage.setItem('simdb_active_name', user.displayName || '');
+            safeStorage.setItem('simdb_active_uid', user.uid);
+            safeStorage.setItem('simdb_active_email', user.email || '');
+            safeStorage.setItem('simdb_active_name', user.displayName || '');
           }
           if (!simulatedUser) {
             cb(user);
@@ -90,9 +119,9 @@ export const auth = new Proxy(firebaseAuth, {
     if (prop === 'signOut') {
       return async () => {
         simulatedUser = null;
-        localStorage.removeItem('simdb_active_uid');
-        localStorage.removeItem('simdb_active_email');
-        localStorage.removeItem('simdb_active_name');
+        safeStorage.removeItem('simdb_active_uid');
+        safeStorage.removeItem('simdb_active_email');
+        safeStorage.removeItem('simdb_active_name');
         onAuthStateCallbacks.forEach(cb => cb(null));
         return firebaseAuth.signOut();
       };
@@ -195,7 +224,7 @@ const triggerListeners = (path: string) => {
       // Root user
       const uId = path.split('/')[1];
       const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
-      const userData = localStorage.getItem(storageKey);
+      const userData = safeStorage.getItem(storageKey);
       const val = userData ? JSON.parse(rawOr(userData, '{}')) : {
         ...getInitialUserData(),
         username: uId,
@@ -234,16 +263,16 @@ const getInitialUserData = () => ({
 });
 
 const getMockCollectionData = (collPath: string): any[] => {
-  const raw = localStorage.getItem(`simdb_${collPath}`);
+  const raw = safeStorage.getItem(`simdb_${collPath}`);
   if (!raw) {
     const segments = collPath.split('_');
     const col = segments[segments.length - 1];
     
     // Fallback recovery: scan localStorage for legacy barberpro_v2_ documents
-    const keys = Object.keys(localStorage);
+    const keys = safeStorage.getKeys();
     for (const key of keys) {
       if (key.startsWith('barberpro_v2_') && key.endsWith(`_${col}`)) {
-        const item = localStorage.getItem(key);
+        const item = safeStorage.getItem(key);
         if (item) {
           try {
             const data = JSON.parse(item);
@@ -280,12 +309,12 @@ const getMockCollectionData = (collPath: string): any[] => {
 };
 
 const saveMockCollectionData = (collPath: string, data: any[]) => {
-  localStorage.setItem(`simdb_${collPath}`, JSON.stringify(data));
+  safeStorage.setItem(`simdb_${collPath}`, JSON.stringify(data));
 };
 
 export function doc(database: any, ...pathSegments: string[]) {
   const fullPath = pathSegments.join('/');
-  const isOffline = fullPath.includes('offline_demo') || pathSegments[1] === 'offline_demo' || localStorage.getItem('force_offline') === 'true';
+  const isOffline = fullPath.includes('offline_demo') || pathSegments[1] === 'offline_demo';
   const ref = originalDoc(database, ...pathSegments as [string, ...string[]]);
   
   (ref as any).isOffline = isOffline;
@@ -295,7 +324,7 @@ export function doc(database: any, ...pathSegments: string[]) {
 
 export function collection(database: any, ...pathSegments: string[]) {
   const fullPath = pathSegments.join('/');
-  const isOffline = fullPath.includes('offline_demo') || pathSegments[1] === 'offline_demo' || localStorage.getItem('force_offline') === 'true';
+  const isOffline = fullPath.includes('offline_demo') || pathSegments[1] === 'offline_demo';
   const ref = originalCollection(database, ...pathSegments as [string, ...string[]]);
   
   (ref as any).isOffline = isOffline;
@@ -304,7 +333,7 @@ export function collection(database: any, ...pathSegments: string[]) {
 }
 
 export function query(queryRef: any, ...queryConstraints: any[]) {
-  const isOffline = queryRef.isOffline || localStorage.getItem('force_offline') === 'true';
+  const isOffline = queryRef.isOffline;
   const ref = originalQuery(queryRef, ...queryConstraints);
   (ref as any).isOffline = isOffline;
   (ref as any).customPath = queryRef.customPath;
@@ -322,14 +351,14 @@ function saveToLocalSimDB(path: string, data: any, options?: any) {
     const uId = segments[1];
     const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
     let current = {};
-    const raw = localStorage.getItem(storageKey);
+    const raw = safeStorage.getItem(storageKey);
     if (raw) {
       try {
         current = JSON.parse(raw);
       } catch {}
     }
     const merged = options?.merge ? { ...current, ...data } : data;
-    localStorage.setItem(storageKey, JSON.stringify(merged));
+    safeStorage.setItem(storageKey, JSON.stringify(merged));
     triggerListeners(path);
   } else {
     const collPath = segments.slice(0, -1).join('_');
@@ -369,7 +398,7 @@ export async function getDoc(docRef: any) {
     if (segments.length === 2) {
       const uId = segments[1];
       const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
-      const userData = localStorage.getItem(storageKey);
+      const userData = safeStorage.getItem(storageKey);
       
       let val;
       if (userData) {
@@ -379,14 +408,14 @@ export async function getDoc(docRef: any) {
         let campaign_goal = "";
         
         // Scan for legacy values to recover
-        const keys = Object.keys(localStorage);
+        const keys = safeStorage.getKeys();
         for (const key of keys) {
           if (key.startsWith('barberpro_v2_')) {
             if (key.endsWith('_marketing_msg')) {
-              try { marketing_msg = JSON.parse(localStorage.getItem(key) || '""') || ''; } catch {}
+              try { marketing_msg = JSON.parse(safeStorage.getItem(key) || '""') || ''; } catch {}
             }
             if (key.endsWith('_campaign_goal')) {
-              try { campaign_goal = JSON.parse(localStorage.getItem(key) || '""') || ''; } catch {}
+              try { campaign_goal = JSON.parse(safeStorage.getItem(key) || '""') || ''; } catch {}
             }
           }
         }
@@ -398,7 +427,7 @@ export async function getDoc(docRef: any) {
           marketing_msg,
           campaign_goal,
         };
-        localStorage.setItem(storageKey, JSON.stringify(val));
+        safeStorage.setItem(storageKey, JSON.stringify(val));
       }
 
       return {
@@ -427,7 +456,7 @@ export async function getDoc(docRef: any) {
         if (segments.length === 2) {
           const uId = segments[1];
           const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
-          localStorage.setItem(storageKey, JSON.stringify(res.data()));
+          safeStorage.setItem(storageKey, JSON.stringify(res.data()));
         } else {
           const collPath = segments.slice(0, -1).join('_');
           const docId = segments[segments.length - 1];
@@ -488,7 +517,7 @@ export async function setDoc(docRef: any, data: any, options?: any) {
   const path = docRef.customPath || '';
   
   if (docRef.isOffline) {
-    localStorage.setItem("simdb_has_local_changes", "true");
+    safeStorage.setItem("simdb_has_local_changes", "true");
     saveToLocalSimDB(path, data, options);
     return;
   }
@@ -515,7 +544,7 @@ export async function updateDoc(docRef: any, data: any) {
   const path = docRef.customPath || '';
   
   if (docRef.isOffline) {
-    localStorage.setItem("simdb_has_local_changes", "true");
+    safeStorage.setItem("simdb_has_local_changes", "true");
     saveToLocalSimDB(path, data, { merge: true });
     return;
   }
@@ -545,11 +574,11 @@ export async function deleteDoc(docRef: any) {
     if (segments.length > 2) {
       deleteFromLocalSimDB(path);
       
-      const pendingDeletionsStr = localStorage.getItem("simdb_pending_deletions");
+      const pendingDeletionsStr = safeStorage.getItem("simdb_pending_deletions");
       const pendingDeletions = pendingDeletionsStr ? JSON.parse(pendingDeletionsStr) : [];
       pendingDeletions.push(path);
-      localStorage.setItem("simdb_pending_deletions", JSON.stringify(pendingDeletions));
-      localStorage.setItem("simdb_has_local_changes", "true");
+      safeStorage.setItem("simdb_pending_deletions", JSON.stringify(pendingDeletions));
+      safeStorage.setItem("simdb_has_local_changes", "true");
     }
     return;
   }
@@ -584,7 +613,7 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
       if (path.split('/').length === 2) {
         const uId = path.split('/')[1];
         const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
-        const userData = localStorage.getItem(storageKey);
+        const userData = safeStorage.getItem(storageKey);
         const val = userData ? JSON.parse(userData) : {
           ...getInitialUserData(),
           username: uId,
@@ -620,14 +649,14 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
           if (snap.exists && snap.exists()) {
             const uId = segments[1];
             const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
-            localStorage.setItem(storageKey, JSON.stringify(snap.data()));
+            safeStorage.setItem(storageKey, JSON.stringify(snap.data()));
           }
         } else if (segments.length === 3 || segments.length === 4) {
           if (snap.docs) {
             const collPath = customPath.replace(/\//g, '_');
             const docs = snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
             
-            if (localStorage.getItem("simdb_has_local_changes") === "true") {
+            if (safeStorage.getItem("simdb_has_local_changes") === "true") {
               const localItems = getMockCollectionData(collPath);
               const mergedDocs = [...localItems];
               docs.forEach((cloudItem: any) => {
@@ -654,9 +683,20 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
   const wrappedOnError = (err: any) => {
     console.warn('onSnapshot error on path:', customPath, err);
     try {
-      handleFirestoreError(err, OperationType.LIST, customPath);
+      if (customPath) {
+        const collPath = customPath.replace(/\//g, '_');
+        const items = getMockCollectionData(collPath);
+        if (items && items.length > 0) {
+          onNext({
+            docs: items.map((item: any) => ({
+              id: item.id,
+              data: () => item
+            }))
+          });
+        }
+      }
     } catch (e) {
-      // Ignored to avoid uncaught bubbling
+      console.warn('Fallback recovery error:', e);
     }
     if (onError) {
       onError(err);
