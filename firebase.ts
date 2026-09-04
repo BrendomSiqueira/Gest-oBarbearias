@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { 
+  initializeFirestore,
   getFirestore,
   doc as originalDoc,
   setDoc as originalSetDoc,
@@ -15,16 +16,17 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
 
-// Initialize Firebase SDK
-console.log('Firebase Init Config:', {
-  projectId: firebaseConfig.projectId,
-  authDomain: firebaseConfig.authDomain,
-  hasApiKey: !!firebaseConfig.apiKey,
-  apiKeyLength: firebaseConfig.apiKey?.length,
-  apiKeyStart: firebaseConfig.apiKey?.slice(0, 5)
-});
+// Initialize Firebase SDK with long polling to ensure reliable connectivity in web containers and proxies
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+let firestoreDb: any;
+try {
+  firestoreDb = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+  }, firebaseConfig.firestoreDatabaseId);
+} catch {
+  firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+}
+export const db = firestoreDb;
 
 const firebaseAuth = getAuth();
 
@@ -172,22 +174,15 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     errMsg.toLowerCase().includes('resource-exhausted') || 
     errMsg.toLowerCase().includes('unavailable') || 
     errMsg.toLowerCase().includes('failed-precondition') ||
-    errMsg.toLowerCase().includes('offline');
+    errMsg.toLowerCase().includes('offline') ||
+    errMsg.toLowerCase().includes('could not reach cloud firestore backend');
 
   if (isQuotaOrAvailabilityFailure) {
-    if (localStorage.getItem('force_offline') === 'true') {
-      throw new Error('Firestore quota exceeded or offline. Operating in Contingency Mode.');
-    }
-    console.error('CRITICAL: Firestore database quota exceeded or offline. Enabling automatic Local High Availability Contingency Mode...');
-    localStorage.setItem('force_offline', 'true');
+    console.warn('Firestore is temporarily offline or unavailable. Operating with local cache/contingency mode for path:', path);
+    safeStorage.setItem('force_offline', 'true');
     const currentUid = auth.currentUser?.uid || 'matheus_farias';
-    localStorage.setItem('simdb_active_uid', currentUid);
-    
-    // Smooth reload to boot in contingency mode
-    setTimeout(() => {
-      window.location.reload();
-    }, 800);
-    throw new Error('Firestore quota exceeded or offline. Activating Contingency Mode.');
+    safeStorage.setItem('simdb_active_uid', currentUid);
+    throw new Error('Firestore is currently offline or unreachable. Using local cache.');
   }
 
   const errInfo: FirestoreErrorInfo = {
@@ -499,18 +494,13 @@ function isQuotaOrAvailabilityError(err: unknown): boolean {
 }
 
 function activateContingencyMode() {
-  if (localStorage.getItem('force_offline') === 'true') {
+  if (safeStorage.getItem('force_offline') === 'true') {
     return;
   }
-  console.error('CRITICAL: Firestore database quota exceeded or offline. Enabling automatic Local High Availability Contingency Mode...');
-  localStorage.setItem('force_offline', 'true');
+  console.warn('Firestore database operating in Local Contingency Mode...');
+  safeStorage.setItem('force_offline', 'true');
   const currentUid = auth.currentUser?.uid || 'matheus_farias';
-  localStorage.setItem('simdb_active_uid', currentUid);
-  
-  // Smooth reload to boot in contingency mode
-  setTimeout(() => {
-    window.location.reload();
-  }, 1200);
+  safeStorage.setItem('simdb_active_uid', currentUid);
 }
 
 export async function setDoc(docRef: any, data: any, options?: any) {
@@ -698,7 +688,16 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
     } catch (e) {
       console.warn('Fallback recovery error:', e);
     }
-    if (onError) {
+
+    const errMsg = err instanceof Error ? err.message : String(err || '');
+    const isTransient = 
+      err?.code === 'unavailable' || 
+      errMsg.toLowerCase().includes('unavailable') || 
+      errMsg.toLowerCase().includes('offline') ||
+      errMsg.toLowerCase().includes('could not reach cloud firestore');
+
+    // Only forward non-transient errors (e.g. permission-denied) to onError to avoid crashing during reconnects
+    if (!isTransient && onError) {
       onError(err);
     }
   };

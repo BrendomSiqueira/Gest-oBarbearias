@@ -15,7 +15,7 @@ export const Button: React.FC<ButtonProps> = ({
   className = '', 
   ...props 
 }) => {
-  const base = "inline-flex items-center justify-center font-black rounded-xl transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-black disabled:opacity-50 disabled:cursor-not-allowed active:scale-95 whitespace-nowrap uppercase tracking-widest";
+  const base = "inline-flex items-center justify-center font-black rounded-xl transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-black disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.97] whitespace-nowrap uppercase tracking-widest min-h-[44px] select-none touch-manipulation";
   
   const variants = {
     primary: "bg-elite-red-500 hover:bg-elite-red-400 text-white focus:ring-elite-red-500 shadow-lg shadow-elite-red-900/40 border-b-4 border-elite-red-700 hover:border-elite-red-600",
@@ -29,9 +29,9 @@ export const Button: React.FC<ButtonProps> = ({
   };
 
   const sizes = {
-    sm: "px-3 py-2 text-[10px]",
-    md: "px-5 py-3 text-xs",
-    lg: "px-8 py-4 text-sm"
+    sm: "px-3 py-2 text-[10px] min-h-[38px]",
+    md: "px-5 py-3 text-xs min-h-[44px]",
+    lg: "px-8 py-4 text-sm min-h-[50px]"
   };
 
   return (
@@ -52,28 +52,28 @@ export const Button: React.FC<ButtonProps> = ({
 };
 
 export const Input: React.FC<{ label?: string; error?: string } & React.InputHTMLAttributes<HTMLInputElement>> = ({ label, error, ...props }) => (
-  <div className="w-full space-y-2">
+  <div className="w-full space-y-1.5">
     {label && <label className="text-[10px] font-black text-elite-cyan-400 uppercase tracking-[0.2em] ml-1">{label}</label>}
     <input
       {...props}
-      className={`w-full bg-slate-950/40 border ${error ? 'border-red-500' : 'border-slate-800'} focus:border-elite-red-500 focus:ring-1 focus:ring-elite-red-500/50 rounded-xl px-4 py-3.5 text-white placeholder-slate-700 transition-all outline-none text-sm font-bold ${props.className || ''}`}
+      className={`w-full bg-slate-950/40 border ${error ? 'border-red-500' : 'border-slate-800'} focus:border-elite-red-500 focus:ring-1 focus:ring-elite-red-500/50 rounded-xl px-4 py-3 sm:py-3.5 text-white placeholder-slate-700 transition-all outline-none text-base sm:text-sm font-bold min-h-[44px] ${props.className || ''}`}
     />
     {error && <p className="text-[10px] font-black text-red-500 mt-1 ml-1 uppercase tracking-wider">{error}</p>}
   </div>
 );
 
 export const Card: React.FC<{ title?: string; icon?: React.ReactNode; actions?: React.ReactNode; children: React.ReactNode; className?: string }> = ({ title, icon, actions, children, className = '' }) => (
-  <div className={`bg-slate-900/60 backdrop-blur-xl border border-elite-lilac-950/50 rounded-2xl overflow-hidden shadow-2xl relative ${className}`}>
+  <div className={`bg-slate-900/60 backdrop-blur-xl border border-elite-lilac-950/50 rounded-2xl sm:rounded-[28px] overflow-hidden shadow-2xl relative ${className}`}>
     {(title || icon) && (
-      <div className="px-6 py-5 border-b border-elite-lilac-950/30 flex items-center justify-between bg-black/40">
-        <div className="flex items-center gap-3">
-          {icon && <div className="text-elite-red-500">{icon}</div>}
-          {title && <h3 className="text-[11px] font-black text-slate-100 uppercase tracking-[0.15em] leading-none">{title}</h3>}
+      <div className="px-4 py-3.5 sm:px-6 sm:py-5 border-b border-elite-lilac-950/30 flex items-center justify-between bg-black/40">
+        <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+          {icon && <div className="text-elite-red-500 shrink-0">{icon}</div>}
+          {title && <h3 className="text-[11px] font-black text-slate-100 uppercase tracking-[0.15em] leading-none truncate">{title}</h3>}
         </div>
-        {actions && <div>{actions}</div>}
+        {actions && <div className="shrink-0">{actions}</div>}
       </div>
     )}
-    <div className="p-6">
+    <div className="p-4 sm:p-6">
       {children}
     </div>
   </div>
@@ -94,7 +94,7 @@ export const Badge: React.FC<{
     cyan: "bg-elite-cyan-500/10 text-elite-cyan-400 border-elite-cyan-500/20"
   };
   return (
-    <span className={`px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-widest border ${styles[variant]} ${className}`}>
+    <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-black uppercase tracking-widest border whitespace-nowrap ${styles[variant]} ${className}`}>
       {children}
     </span>
   );

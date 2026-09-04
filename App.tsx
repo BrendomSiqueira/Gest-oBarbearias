@@ -29,6 +29,8 @@ import {
   Edit3,
   Save,
   X,
+  Menu,
+  MoreHorizontal,
   Send,
   Gift,
   Target,
@@ -869,6 +871,7 @@ const App: React.FC = () => {
   const [isPricePendingOnComplete, setIsPricePendingOnComplete] = useState(false);
   const [finishingPriceMap, setFinishingPriceMap] = useState<{ [aptId: string]: string }>({});
   const [agendaSearchTerm, setAgendaSearchTerm] = useState("");
+  const [mobileAgendaTab, setMobileAgendaTab] = useState<"agenda" | "novo">("agenda");
   const [finishingAptId, setFinishingAptId] = useState<string | null>(null);
   const [isGeneratingMessage, setIsGeneratingMessage] = useState(false);
   const [isSendingReminder, setIsSendingReminder] = useState<string | null>(
@@ -3721,34 +3724,33 @@ const App: React.FC = () => {
       {/* Mobile Drawer Backdrop */}
       {isSidebarOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm lg:hidden animate-in fade-in duration-200"
+          className="fixed inset-0 z-40 bg-black/80 backdrop-blur-sm lg:hidden animate-in fade-in duration-200"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-64 bg-slate-950/95 backdrop-blur-2xl border-r border-white/5 transition-all duration-300 lg:static lg:translate-x-0 ${isSidebarOpen ? "translate-x-0" : "-translate-x-full lg:w-20"}`}
+        className={`fixed inset-y-0 left-0 z-50 w-72 sm:w-80 bg-slate-950/95 backdrop-blur-2xl border-r border-white/5 transition-all duration-300 lg:static lg:translate-x-0 ${isSidebarOpen ? "translate-x-0 shadow-2xl shadow-black/80" : "-translate-x-full lg:w-20"}`}
       >
-        <div className="h-full flex flex-col p-5 sm:p-6 justify-between">
+        <div className="h-full flex flex-col p-4 sm:p-6 justify-between">
           <div>
             <div className="mb-6 flex items-center justify-between overflow-hidden">
               <div className="flex items-center gap-3">
                 <LogoElite className="h-9 w-9 min-w-[36px]" />
-                {isSidebarOpen && (
-                  <div className="truncate">
-                    <h1 className="text-[10px] font-black text-white uppercase tracking-widest">
-                      Matheus Farias
-                    </h1>
-                    <p className="text-[8px] text-elite-red-500 font-black uppercase truncate">
-                      {session?.shopName}
-                    </p>
-                  </div>
-                )}
+                <div className="truncate">
+                  <h1 className="text-[11px] font-black text-white uppercase tracking-widest leading-tight">
+                    Matheus Farias
+                  </h1>
+                  <p className="text-[9px] text-elite-red-500 font-black uppercase truncate mt-0.5">
+                    {session?.shopName || "Barbearia"}
+                  </p>
+                </div>
               </div>
-              {isSidebarOpen && (
+              <div className="flex items-center gap-1.5">
                 <button
                   onClick={() => setShowNotifications(!showNotifications)}
                   className="relative p-2 bg-white/5 rounded-xl hover:bg-white/10 transition-all group cursor-pointer"
+                  title="Notificações"
                 >
                   <BellRing
                     size={16}
@@ -3762,9 +3764,16 @@ const App: React.FC = () => {
                     <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-elite-red-500 rounded-full border-2 border-slate-950"></span>
                   )}
                 </button>
-              )}
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="p-2 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white rounded-xl lg:hidden cursor-pointer transition-colors"
+                  title="Fechar Menu"
+                >
+                  <X size={18} />
+                </button>
+              </div>
             </div>
-            <nav className="space-y-1 overflow-y-auto pr-1 max-h-[calc(100vh-230px)] custom-scrollbar">
+            <nav className="space-y-1 overflow-y-auto pr-1 max-h-[calc(100vh-210px)] custom-scrollbar">
               {[
                 { id: Tab.Dashboard, icon: LayoutDashboard, label: "Painel" },
                 { id: Tab.Agenda, icon: Calendar, label: "Agenda" },
@@ -3787,10 +3796,10 @@ const App: React.FC = () => {
                     setActiveTab(item.id);
                     if (window.innerWidth < 1024) setSidebarOpen(false);
                   }}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all cursor-pointer ${activeTab === item.id ? "bg-elite-red-500 text-white shadow-lg shadow-elite-red-500/20" : "text-slate-500 hover:text-white hover:bg-white/5"}`}
+                  className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer min-h-[44px] ${activeTab === item.id ? "bg-elite-red-500 text-white shadow-lg shadow-elite-red-500/20" : "text-slate-400 hover:text-white hover:bg-white/5"}`}
                 >
-                  <item.icon size={16} />
-                  {isSidebarOpen && <span>{item.label}</span>}
+                  <item.icon size={18} className="shrink-0" />
+                  <span className="truncate">{item.label}</span>
                 </button>
               ))}
             </nav>
@@ -3799,10 +3808,10 @@ const App: React.FC = () => {
           <div className="space-y-2 pt-3 border-t border-white/5">
             <button
               onClick={handleLogout}
-              className="w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest text-[#E1B15F] hover:text-red-500 hover:bg-red-500/10 transition-all cursor-pointer"
+              className="w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-xs font-black uppercase tracking-wider text-[#E1B15F] hover:text-red-500 hover:bg-red-500/10 transition-all cursor-pointer min-h-[44px]"
             >
-              <LogOut size={16} />
-              {isSidebarOpen && <span>Sair do Sistema</span>}
+              <LogOut size={18} className="shrink-0" />
+              <span>Sair do Sistema</span>
             </button>
             <WoodenMouseSignature minimal={!isSidebarOpen} />
           </div>
@@ -3810,13 +3819,15 @@ const App: React.FC = () => {
       </aside>
 
       <main className="flex-1 min-w-0 min-h-screen flex flex-col bg-slate-950 overflow-y-auto">
-        <header className="sticky top-0 z-30 bg-slate-950/80 backdrop-blur-xl border-b border-white/5 px-4 sm:px-6 lg:px-8 py-3.5 flex items-center justify-between">
-          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+        <header className="sticky top-0 z-30 bg-slate-950/85 backdrop-blur-xl border-b border-white/5 px-3.5 sm:px-6 lg:px-8 py-3 sm:py-3.5 flex items-center justify-between">
+          <div className="flex items-center gap-2.5 sm:gap-4 min-w-0">
             <button
-              onClick={() => setSidebarOpen(!isSidebarOpen)}
-              className="p-2 text-slate-400 hover:text-white bg-slate-900 rounded-xl border border-white/5 lg:hidden cursor-pointer"
+              onClick={() => setSidebarOpen(true)}
+              className="p-2 text-slate-300 hover:text-white bg-slate-900/90 hover:bg-slate-800 rounded-xl border border-white/10 lg:hidden cursor-pointer active:scale-95 transition-all flex items-center justify-center shrink-0"
+              aria-label="Abrir Menu Lateral"
+              title="Abrir Menu"
             >
-              <LayoutDashboard size={18} />
+              <Menu size={20} />
             </button>
             <h2 className="text-xs sm:text-sm font-black uppercase tracking-widest text-white truncate flex items-center gap-2">
               {activeTab}
@@ -3829,21 +3840,34 @@ const App: React.FC = () => {
                     window.location.reload();
                   }
                 }}
-                className="flex items-center gap-1.5 px-2.5 py-1 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-500 text-[8px] sm:text-[9px] font-black uppercase tracking-wider cursor-pointer hover:bg-amber-500/20 transition-all"
+                className="flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-500 text-[8px] sm:text-[9px] font-black uppercase tracking-wider cursor-pointer hover:bg-amber-500/20 transition-all shrink-0"
                 title="Modo de Alta Disponibilidade Local Ativo. Clique para tentar reconectar."
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-                <span className="hidden md:inline">Modo Contingência</span>
-                <span className="md:hidden">Local</span>
+                <span className="hidden sm:inline">Modo Contingência</span>
+                <span className="sm:hidden">Local</span>
               </div>
             )}
           </div>
-          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
             {isSaving && (
-              <Badge variant="cyan" className="animate-pulse text-[8px]">
+              <Badge variant="cyan" className="animate-pulse text-[8px] hidden sm:inline-flex">
                 SALVANDO...
               </Badge>
             )}
+            <button
+              onClick={() => setShowNotifications(!showNotifications)}
+              className="p-2 bg-slate-900 border border-white/5 rounded-xl text-slate-400 hover:text-white transition-all cursor-pointer relative lg:hidden"
+              title="Notificações"
+            >
+              <BellRing
+                size={16}
+                className={notifications.some((n) => !n.read) ? "text-elite-red-500 animate-bounce" : ""}
+              />
+              {notifications.some((n) => !n.read) && (
+                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-elite-red-500 rounded-full border-2 border-slate-950"></span>
+              )}
+            </button>
             <button
               onClick={() => setIsPrivacyMode(!isPrivacyMode)}
               className="p-2 bg-slate-900 border border-white/5 rounded-xl text-slate-400 hover:text-elite-cyan-400 transition-all cursor-pointer"
@@ -3885,9 +3909,43 @@ const App: React.FC = () => {
           {activeTab === Tab.OnlineBooking && <OnlineBookingView />}
 
           {activeTab === Tab.Agenda && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start animate-in slide-in-from-bottom duration-500">
-              {/* Coluna Esquerda: Novo Agendamento & Solicitações */}
-              <div className="lg:col-span-5 xl:col-span-5 space-y-6">
+            <div className="space-y-4 animate-in slide-in-from-bottom duration-500">
+              {/* Seletor Mobile: Horários vs Novo Agendamento */}
+              <div className="lg:hidden flex items-center p-1 bg-slate-900/90 border border-white/10 rounded-2xl gap-1 shadow-xl">
+                <button
+                  type="button"
+                  onClick={() => setMobileAgendaTab("agenda")}
+                  className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer min-h-[44px] ${
+                    mobileAgendaTab === "agenda"
+                      ? "bg-elite-red-500 text-white shadow-lg shadow-elite-red-500/30"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <Calendar size={15} />
+                  <span>Horários ({appointments.filter((a) => a.date === selectedDate && !a.completed).length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileAgendaTab("novo")}
+                  className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer min-h-[44px] ${
+                    mobileAgendaTab === "novo"
+                      ? "bg-elite-red-500 text-white shadow-lg shadow-elite-red-500/30"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <Plus size={15} />
+                  <span>Novo</span>
+                  {appointmentRequests.length > 0 && (
+                    <span className="px-1.5 py-0.5 bg-[#E1B15F] text-slate-950 rounded-full text-[9px] font-black">
+                      {appointmentRequests.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                {/* Coluna Esquerda: Novo Agendamento & Solicitações */}
+                <div className={`lg:col-span-5 xl:col-span-5 space-y-6 ${mobileAgendaTab === "novo" ? "block" : "hidden lg:block"}`}>
                 {appointmentRequests.length > 0 && <BookingRequestListView />}
                 
                 <Card title="Novo Agendamento" icon={<Plus size={16} />}>
@@ -3953,6 +4011,7 @@ const App: React.FC = () => {
                         setAptServiceSearch("");
                         setAptTimeInput("");
                         setIsPricePendingOnComplete(false);
+                        setMobileAgendaTab("agenda");
                         showToast("Horário agendado com sucesso!", "success");
                       } catch (err) {
                         handleFirestoreError(
@@ -4362,7 +4421,7 @@ const App: React.FC = () => {
               </div>
 
               {/* Coluna Direita: Agenda Diária, Pesquisa de Cortes/Clientes e Métricas */}
-              <div className="lg:col-span-7 xl:col-span-7 space-y-4">
+              <div className={`lg:col-span-7 xl:col-span-7 space-y-4 ${mobileAgendaTab === "agenda" ? "block" : "hidden lg:block"}`}>
                 {/* Cabeçalho da Agenda do Dia com Métricas */}
                 <div className="bg-slate-900/60 p-4 sm:p-5 rounded-[24px] border border-white/5 space-y-4 shadow-xl">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -4685,6 +4744,7 @@ const App: React.FC = () => {
                 })()}
               </div>
             </div>
+            </div>
           )}
 
           {activeTab === Tab.Clients && (
@@ -4747,41 +4807,42 @@ const App: React.FC = () => {
                 {clients.map((c) => (
                   <div
                     key={c.id}
-                    className="bg-slate-950/40 border border-white/5 p-8 rounded-[40px] flex items-center justify-between group hover:bg-slate-900/60 transition-all shadow-xl hover:border-elite-red-500/20"
+                    className="bg-slate-950/40 border border-white/5 p-4 sm:p-6 rounded-2xl sm:rounded-[36px] flex flex-col sm:flex-row sm:items-center justify-between gap-4 group hover:bg-slate-900/60 transition-all shadow-xl hover:border-elite-red-500/20"
                   >
-                    <div className="flex items-center gap-6">
-                      <div className="h-16 w-16 rounded-3xl bg-slate-900 border-2 border-elite-red-500/20 flex items-center justify-center overflow-hidden shadow-inner">
+                    <div className="flex items-center gap-4 sm:gap-6 min-w-0">
+                      <div className="h-14 w-14 sm:h-16 sm:w-16 rounded-2xl sm:rounded-3xl bg-slate-900 border-2 border-elite-red-500/20 flex items-center justify-center overflow-hidden shadow-inner shrink-0">
                         {c.photo ? (
                           <img
                             src={c.photo}
                             className="h-full w-full object-cover"
                           />
                         ) : (
-                          <span className="text-3xl font-black text-elite-red-500 uppercase">
+                          <span className="text-2xl sm:text-3xl font-black text-elite-red-500 uppercase">
                             {c.name.charAt(0)}
                           </span>
                         )}
                       </div>
-                      <div>
-                        <h4 className="text-xl font-black text-white uppercase tracking-tight italic">
+                      <div className="min-w-0">
+                        <h4 className="text-base sm:text-xl font-black text-white uppercase tracking-tight italic truncate">
                           {c.name}
                         </h4>
-                        <div className="flex items-center gap-3 mt-3">
+                        <div className="flex items-center gap-2 sm:gap-3 mt-1.5 sm:mt-3">
                           <Badge
                             variant="success"
-                            className="bg-emerald-500/20 text-emerald-400 border-none"
+                            className="bg-emerald-500/20 text-emerald-400 border-none text-[9px] sm:text-xs"
                           >
                             {formatCurrency(c.totalSpent)} GASTO
                           </Badge>
                         </div>
                       </div>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
                       <button
                         onClick={() => setEditingClient(c)}
-                        className="p-4 bg-elite-cyan-500/10 text-elite-cyan-400 rounded-2xl hover:bg-elite-cyan-500 hover:text-black transition-all"
+                        className="p-3 sm:p-4 bg-elite-cyan-500/10 text-elite-cyan-400 rounded-xl sm:rounded-2xl hover:bg-elite-cyan-500 hover:text-black transition-all cursor-pointer"
+                        title="Editar Cliente"
                       >
-                        <Edit3 size={24} />
+                        <Edit3 size={18} className="sm:w-6 sm:h-6" />
                       </button>
                       <button
                         onClick={() =>
@@ -4790,9 +4851,10 @@ const App: React.FC = () => {
                             "_blank",
                           )
                         }
-                        className="p-4 bg-emerald-500/10 text-emerald-500 rounded-2xl hover:bg-emerald-500 hover:text-white transition-all"
+                        className="p-3 sm:p-4 bg-emerald-500/10 text-emerald-500 rounded-xl sm:rounded-2xl hover:bg-emerald-500 hover:text-white transition-all cursor-pointer"
+                        title="Abrir WhatsApp"
                       >
-                        <MessageCircle size={24} />
+                        <MessageCircle size={18} className="sm:w-6 sm:h-6" />
                       </button>
                       <button
                         onClick={async () => {
@@ -4811,9 +4873,10 @@ const App: React.FC = () => {
                             );
                           }
                         }}
-                        className="p-4 text-slate-800 hover:text-red-500 transition-colors"
+                        className="p-3 sm:p-4 text-slate-500 hover:text-red-500 transition-colors cursor-pointer"
+                        title="Excluir Cliente"
                       >
-                        <Trash2 size={24} />
+                        <Trash2 size={18} className="sm:w-6 sm:h-6" />
                       </button>
                     </div>
                   </div>
@@ -4823,21 +4886,21 @@ const App: React.FC = () => {
           )}
 
           {activeTab === Tab.Finance && (
-            <div className="space-y-8 animate-in fade-in duration-500">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-emerald-500/5 border border-emerald-500/20 p-10 rounded-[40px] shadow-2xl">
+            <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-500">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
+                <div className="bg-emerald-500/5 border border-emerald-500/20 p-5 sm:p-8 rounded-2xl sm:rounded-[36px] shadow-xl">
                   <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">
                     Receita Mensal
                   </p>
-                  <p className="text-4xl font-black text-white">
+                  <p className="text-2xl sm:text-4xl font-black text-white">
                     {formatCurrency(stats.monthlyRev)}
                   </p>
                 </div>
-                <div className="bg-amber-500/5 border border-amber-500/20 p-10 rounded-[40px] shadow-2xl">
+                <div className="bg-amber-500/5 border border-amber-500/20 p-5 sm:p-8 rounded-2xl sm:rounded-[36px] shadow-xl">
                   <p className="text-[10px] font-black text-amber-500 uppercase tracking-widest mb-1">
                     Pendências
                   </p>
-                  <p className="text-4xl font-black text-white">
+                  <p className="text-2xl sm:text-4xl font-black text-white">
                     {formatCurrency(
                       appointments
                         .filter((a) => a.completed && !a.paid)
@@ -4845,11 +4908,11 @@ const App: React.FC = () => {
                     )}
                   </p>
                 </div>
-                <div className="bg-elite-red-500/5 border border-elite-red-500/20 p-10 rounded-[40px] shadow-2xl">
+                <div className="bg-elite-red-500/5 border border-elite-red-500/20 p-5 sm:p-8 rounded-2xl sm:rounded-[36px] shadow-xl">
                   <p className="text-[10px] font-black text-elite-red-500 uppercase tracking-widest mb-1">
                     Total Ajustes
                   </p>
-                  <p className="text-4xl font-black text-white">
+                  <p className="text-2xl sm:text-4xl font-black text-white">
                     {formatCurrency(
                       adjustments.reduce((acc, a) => acc + Number(a.amount || 0), 0),
                     )}
@@ -4857,12 +4920,12 @@ const App: React.FC = () => {
                 </div>
               </div>
               <Card title="Detalhamento Financeiro">
-                <div className="flex gap-2 mb-8 bg-slate-950 p-1.5 rounded-2xl w-fit shadow-inner border border-white/5">
+                <div className="flex flex-wrap sm:flex-nowrap gap-1.5 sm:gap-2 mb-6 sm:mb-8 bg-slate-950 p-1.5 rounded-2xl w-full sm:w-fit shadow-inner border border-white/5">
                   {["pending", "paid", "adjustments"].map((t) => (
                     <button
                       key={t}
                       onClick={() => setFinanceSubTab(t as any)}
-                      className={`px-8 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${financeSubTab === t ? "bg-elite-red-500 text-white shadow-lg" : "text-slate-500 hover:text-white"}`}
+                      className={`flex-1 sm:flex-initial px-4 sm:px-8 py-2.5 sm:py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all min-h-[44px] flex items-center justify-center cursor-pointer ${financeSubTab === t ? "bg-elite-red-500 text-white shadow-lg" : "text-slate-400 hover:text-white"}`}
                     >
                       {t === "pending"
                         ? "Pendentes"
@@ -4877,11 +4940,11 @@ const App: React.FC = () => {
                     adjustments.map((adj) => (
                       <div
                         key={adj.id}
-                        className="p-6 bg-slate-900/40 border border-white/5 rounded-[32px] flex justify-between items-center group shadow-md"
+                        className="p-4 sm:p-6 bg-slate-900/40 border border-white/5 rounded-2xl sm:rounded-[32px] flex flex-col sm:flex-row justify-between sm:items-center gap-3 group shadow-md"
                       >
                         <div className="flex items-center gap-4">
                           <div
-                            className={`h-12 w-12 rounded-2xl flex items-center justify-center ${adj.amount >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"}`}
+                            className={`h-12 w-12 rounded-2xl flex items-center justify-center shrink-0 ${adj.amount >= 0 ? "bg-emerald-500/10 text-emerald-500" : "bg-rose-500/10 text-rose-500"}`}
                           >
                             {adj.amount >= 0 ? (
                               <ArrowUpCircle size={24} />
@@ -4898,9 +4961,9 @@ const App: React.FC = () => {
                             </p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-6">
+                        <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto">
                           <span
-                            className={`text-2xl font-black ${adj.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}
+                            className={`text-xl sm:text-2xl font-black ${adj.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}
                           >
                             {adj.amount >= 0 ? "+" : ""}
                             {formatCurrency(adj.amount)}
@@ -4927,7 +4990,8 @@ const App: React.FC = () => {
                                 );
                               }
                             }}
-                            className="p-2 text-slate-800 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                            className="p-2 text-slate-500 hover:text-red-500 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity cursor-pointer"
+                            title="Remover ajuste"
                           >
                             <Trash2 size={18} />
                           </button>
@@ -4950,11 +5014,11 @@ const App: React.FC = () => {
                         return (
                           <div
                             key={apt.id}
-                            className="p-6 bg-slate-900/40 border border-white/5 rounded-[32px] flex justify-between items-center group shadow-md hover:border-white/10 transition-colors"
+                            className="p-4 sm:p-6 bg-slate-900/40 border border-white/5 rounded-2xl sm:rounded-[32px] flex flex-col sm:flex-row justify-between sm:items-center gap-4 group shadow-md hover:border-white/10 transition-colors"
                           >
-                            <div className="flex items-center gap-5">
+                            <div className="flex items-center gap-4 sm:gap-5 min-w-0">
                               <div
-                                className={`h-14 w-14 rounded-2xl border-2 overflow-hidden flex items-center justify-center ${apt.paid ? "border-emerald-500/30" : "border-amber-500/30"}`}
+                                className={`h-12 w-12 sm:h-14 sm:w-14 rounded-2xl border-2 overflow-hidden flex items-center justify-center shrink-0 ${apt.paid ? "border-emerald-500/30" : "border-amber-500/30"}`}
                               >
                                 {c?.photo ? (
                                   <img
@@ -4963,16 +5027,16 @@ const App: React.FC = () => {
                                   />
                                 ) : (
                                   <UserIcon
-                                    className="text-slate-800"
-                                    size={24}
+                                    className="text-slate-700"
+                                    size={22}
                                   />
                                 )}
                               </div>
-                              <div>
-                                <p className="font-black text-white uppercase text-base italic leading-none mb-1">
+                              <div className="min-w-0">
+                                <p className="font-black text-white uppercase text-sm sm:text-base italic leading-tight mb-1 truncate">
                                   {c?.name || "Cliente Removido"}
                                 </p>
-                                <div className="flex items-center gap-3">
+                                <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                                   <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest">
                                     {apt.date} •{" "}
                                     {
@@ -4999,8 +5063,8 @@ const App: React.FC = () => {
                                 </div>
                               </div>
                             </div>
-                            <div className="flex items-center gap-8">
-                              <span className="text-2xl font-black text-elite-cyan-400 italic">
+                            <div className="flex items-center justify-between sm:justify-end gap-4 sm:gap-8 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
+                              <span className="text-xl sm:text-2xl font-black text-elite-cyan-400 italic">
                                 {formatCurrency(apt.finalPrice)}
                               </span>
                               {!apt.paid && (
@@ -6387,12 +6451,94 @@ const App: React.FC = () => {
             </div>
           )}
         </div>
+        {/* Mobile Bottom Navigation Dock */}
+        <nav className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-2xl border-t border-white/10 px-2 pt-2 pb-3 safe-bottom shadow-[0_-10px_30px_rgba(0,0,0,0.8)]">
+          <div className="flex items-center justify-around max-w-lg mx-auto">
+            {[
+              {
+                id: Tab.Agenda,
+                label: "Agenda",
+                icon: Calendar,
+                badge:
+                  appointments.filter(
+                    (a) =>
+                      a.date === new Date().toISOString().split("T")[0] &&
+                      !a.completed,
+                  ).length + appointmentRequests.length,
+              },
+              {
+                id: Tab.Dashboard,
+                label: "Painel",
+                icon: LayoutDashboard,
+              },
+              {
+                id: Tab.Clients,
+                label: "Clientes",
+                icon: Users,
+              },
+              {
+                id: Tab.Finance,
+                label: "Financeiro",
+                icon: TrendingUp,
+              },
+              {
+                id: "more",
+                label: "Menu",
+                icon: MoreHorizontal,
+                isActive: ![
+                  Tab.Agenda,
+                  Tab.Dashboard,
+                  Tab.Clients,
+                  Tab.Finance,
+                ].includes(activeTab),
+              },
+            ].map((item) => {
+              const isCurrent =
+                item.id === "more" ? item.isActive : activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    if (item.id === "more") {
+                      setSidebarOpen(true);
+                    } else {
+                      setActiveTab(item.id as Tab);
+                    }
+                  }}
+                  className={`flex-1 flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-all cursor-pointer relative min-h-[44px] ${
+                    isCurrent
+                      ? "text-elite-red-500 font-black"
+                      : "text-slate-400 hover:text-white"
+                  }`}
+                >
+                  <div className="relative flex items-center justify-center">
+                    <item.icon
+                      size={20}
+                      className={isCurrent ? "stroke-[2.5]" : "stroke-[1.8]"}
+                    />
+                    {typeof item.badge === "number" && item.badge > 0 ? (
+                      <span className="absolute -top-1.5 -right-3 px-1 min-w-[15px] h-[15px] bg-elite-red-500 text-white rounded-full text-[8px] font-black flex items-center justify-center shadow-md">
+                        {item.badge > 99 ? "99+" : item.badge}
+                      </span>
+                    ) : null}
+                  </div>
+                  <span className="text-[9px] mt-1 font-bold uppercase tracking-wider leading-none">
+                    {item.label}
+                  </span>
+                  {isCurrent && (
+                    <span className="w-1.5 h-1.5 bg-elite-red-500 rounded-full mt-1"></span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
       </main>
 
       {/* MODAL DE RECUSA DE AGENDAMENTO COM MOTIVO */}
       {showRejectModal && rejectingRequestId && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="bg-slate-900 border border-red-500/20 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200 overflow-y-auto">
+          <div className="bg-slate-900 border border-red-500/20 rounded-3xl p-6 max-w-md w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-200 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-red-400 font-black italic uppercase text-base">
                 <div className="p-2 bg-red-500/10 rounded-xl">
