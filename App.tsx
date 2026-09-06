@@ -4678,62 +4678,90 @@ const App: React.FC = () => {
                             )}
                           </div>
                         )}
-                        <input
-                          type="text"
-                          placeholder="Buscar cliente por nome..."
-                          className="w-full bg-slate-950/60 border border-white/10 rounded-xl px-4 py-3 text-white text-xs font-bold focus:border-elite-red-500 outline-none"
-                          value={aptClientSearch}
-                          onChange={(e) => {
-                            setAptClientSearch(e.target.value);
-                            setShowAptResults(true);
-                            if (selectedAptClient) setSelectedAptClient(null);
-                          }}
-                        />
+                        <div className="relative w-full">
+                          <input
+                            type="text"
+                            placeholder="Buscar cliente por nome..."
+                            className="w-full bg-slate-950/60 border border-white/10 rounded-xl px-4 py-3 text-white text-xs font-bold focus:border-elite-red-500 outline-none pr-12"
+                            value={aptClientSearch}
+                            onChange={(e) => {
+                              setAptClientSearch(e.target.value);
+                              setShowAptResults(true);
+                              if (selectedAptClient) setSelectedAptClient(null);
+                            }}
+                            onFocus={() => setShowAptResults(true)}
+                            onKeyDown={(e) => {
+                              if (e.key === "Escape") {
+                                setShowAptResults(false);
+                              }
+                            }}
+                          />
+                          {(aptClientSearch || selectedAptClient) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setAptClientSearch("");
+                                setSelectedAptClient(null);
+                                setShowAptResults(false);
+                              }}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white cursor-pointer"
+                              title="Limpar busca de cliente"
+                            >
+                              <X size={14} />
+                            </button>
+                          )}
+                        </div>
                       </div>
                       {showAptResults && aptClientSearch.trim() && (
-                        <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden max-h-[160px] overflow-y-auto p-1 space-y-1">
-                          {clients
-                            .filter((c) =>
-                              c.name
-                                .toLowerCase()
-                                .includes(aptClientSearch.toLowerCase()),
-                            )
-                            .map((c) => (
-                              <button
-                                key={c.id}
-                                type="button"
-                                className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer"
-                                onClick={() => {
-                                  setSelectedAptClient(c);
-                                  setAptClientSearch(c.name);
-                                  setShowAptResults(false);
-                                }}
-                              >
-                                <div className="h-8 w-8 rounded-lg bg-slate-950 border border-elite-red-500/20 flex items-center justify-center overflow-hidden shrink-0">
-                                  {c.photo ? (
-                                    <img
-                                      src={c.photo}
-                                      className="h-full w-full object-cover"
-                                    />
-                                  ) : (
-                                    <span className="text-[9px] font-black text-elite-red-500 uppercase">
-                                      {c.name.charAt(0)}
+                        <>
+                          <div
+                            className="fixed inset-0 z-40"
+                            onClick={() => setShowAptResults(false)}
+                          />
+                          <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden max-h-[160px] overflow-y-auto p-1 space-y-1">
+                            {clients
+                              .filter((c) =>
+                                c.name
+                                  .toLowerCase()
+                                  .includes(aptClientSearch.toLowerCase()),
+                              )
+                              .map((c) => (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer"
+                                  onClick={() => {
+                                    setSelectedAptClient(c);
+                                    setAptClientSearch(c.name);
+                                    setShowAptResults(false);
+                                  }}
+                                >
+                                  <div className="h-8 w-8 rounded-lg bg-slate-950 border border-elite-red-500/20 flex items-center justify-center overflow-hidden shrink-0">
+                                    {c.photo ? (
+                                      <img
+                                        src={c.photo}
+                                        className="h-full w-full object-cover"
+                                      />
+                                    ) : (
+                                      <span className="text-[9px] font-black text-elite-red-500 uppercase">
+                                        {c.name.charAt(0)}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="truncate">
+                                    <span className="text-[10px] font-black text-white uppercase block truncate">
+                                      {c.name}
                                     </span>
-                                  )}
-                                </div>
-                                <div className="truncate">
-                                  <span className="text-[10px] font-black text-white uppercase block truncate">
-                                    {c.name}
-                                  </span>
-                                  {c.phone && (
-                                    <span className="text-[8px] text-slate-400 font-mono">
-                                      {c.phone}
-                                    </span>
-                                  )}
-                                </div>
-                              </button>
-                            ))}
-                        </div>
+                                    {c.phone && (
+                                      <span className="text-[8px] text-slate-400 font-mono">
+                                        {c.phone}
+                                      </span>
+                                    )}
+                                  </div>
+                                </button>
+                              ))}
+                          </div>
+                        </>
                       )}
                     </div>
 
@@ -4743,11 +4771,27 @@ const App: React.FC = () => {
                         <label className="text-[10px] font-black text-elite-cyan-400 uppercase tracking-widest ml-1 flex items-center gap-1.5">
                           <Scissors size={12} /> CORTE / SERVIÇO
                         </label>
-                        {selectedAptService && (
-                          <span className="text-[9px] font-black text-[#E1B15F] uppercase">
-                            R$ {selectedAptService.price} • {selectedAptService.duration || 30} min
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          {(showAptServiceResults || aptServiceSearch) && !selectedAptService && (
+                            <button
+                              type="button"
+                              id="btn-close-service-search-label"
+                              onClick={() => {
+                                setShowAptServiceResults(false);
+                                setAptServiceSearch("");
+                              }}
+                              className="text-[9px] font-black text-slate-400 hover:text-rose-400 uppercase flex items-center gap-1 transition-colors cursor-pointer bg-slate-950/80 px-2 py-0.5 rounded-lg border border-white/5"
+                              title="Fechar barra de pesquisa"
+                            >
+                              <X size={10} className="text-rose-400" /> Fechar Pesquisa
+                            </button>
+                          )}
+                          {selectedAptService && (
+                            <span className="text-[9px] font-black text-[#E1B15F] uppercase">
+                              R$ {selectedAptService.price} • {selectedAptService.duration || 30} min
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       {selectedAptService ? (
@@ -4789,15 +4833,30 @@ const App: React.FC = () => {
                                 setShowAptServiceResults(true);
                               }}
                               onFocus={() => setShowAptServiceResults(true)}
-                              className="w-full bg-slate-950/80 border border-elite-cyan-500/30 focus:border-elite-cyan-400 rounded-xl px-4 py-2.5 text-white text-xs font-bold outline-none placeholder-slate-500 transition-all"
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  setShowAptServiceResults(false);
+                                  setAptServiceSearch("");
+                                }
+                              }}
+                              className={`w-full bg-slate-950/80 border border-elite-cyan-500/30 focus:border-elite-cyan-400 rounded-xl px-4 py-2.5 text-white text-xs font-bold outline-none placeholder-slate-500 transition-all ${
+                                showAptServiceResults || aptServiceSearch ? "pr-24" : "pr-4"
+                              }`}
                             />
-                            {aptServiceSearch && (
+                            {(showAptServiceResults || aptServiceSearch) && (
                               <button
                                 type="button"
-                                onClick={() => setAptServiceSearch("")}
-                                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-500 hover:text-white cursor-pointer"
+                                id="btn-close-service-search"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setShowAptServiceResults(false);
+                                  setAptServiceSearch("");
+                                }}
+                                title="Fechar pesquisa de corte"
+                                className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-[9px] font-black uppercase transition-all cursor-pointer border border-white/10 shadow-sm"
                               >
-                                <X size={14} />
+                                <X size={12} className="text-rose-400" />
+                                <span>Fechar</span>
                               </button>
                             )}
                           </div>
@@ -4822,41 +4881,96 @@ const App: React.FC = () => {
                           </div>
 
                           {showAptServiceResults && (
-                            <div className="absolute z-50 left-0 right-0 top-full mt-1 bg-slate-900 border border-white/10 rounded-2xl shadow-2xl overflow-hidden max-h-[180px] overflow-y-auto p-1 space-y-1 animate-in slide-in-from-top-1 duration-200">
-                              {services
-                                .filter((s) =>
-                                  s.name.toLowerCase().includes(aptServiceSearch.toLowerCase())
-                                )
-                                .map((s) => (
+                            <>
+                              {/* Backdrop invisível para fechar ao clicar fora */}
+                              <div
+                                className="fixed inset-0 z-40"
+                                onClick={() => setShowAptServiceResults(false)}
+                              />
+                              <div className="absolute z-50 left-0 right-0 top-full mt-1.5 bg-slate-900 border border-white/15 rounded-2xl shadow-2xl overflow-hidden max-h-[220px] flex flex-col animate-in slide-in-from-top-1 duration-200">
+                                {/* Header do Dropdown com botão Fechar */}
+                                <div className="px-3 py-2 bg-slate-950/90 border-b border-white/10 flex items-center justify-between shrink-0">
+                                  <span className="text-[9px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
+                                    <Scissors size={11} className="text-elite-cyan-400" />
+                                    Selecione o Corte / Serviço
+                                  </span>
                                   <button
-                                    key={s.id}
                                     type="button"
+                                    id="btn-close-service-dropdown-header"
                                     onClick={() => {
-                                      setSelectedAptService(s);
-                                      setAptServiceSearch("");
                                       setShowAptServiceResults(false);
+                                      setAptServiceSearch("");
                                     }}
-                                    className="w-full text-left p-2 hover:bg-slate-800/80 rounded-xl flex items-center justify-between transition-colors group cursor-pointer"
+                                    className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[9px] font-black uppercase bg-slate-800 hover:bg-rose-500/20 text-slate-300 hover:text-rose-400 border border-white/10 transition-all cursor-pointer"
                                   >
-                                    <div className="flex items-center gap-2">
-                                      <div className="p-1.5 bg-slate-950 group-hover:bg-[#E1B15F]/20 text-slate-400 group-hover:text-[#E1B15F] rounded-lg transition-colors">
-                                        <Scissors size={13} />
-                                      </div>
-                                      <div>
-                                        <p className="text-[11px] font-black text-white uppercase group-hover:text-elite-cyan-400 transition-colors">
-                                          {s.name}
-                                        </p>
-                                        <p className="text-[8px] text-slate-400 font-bold">
-                                          {s.duration || 30} min
-                                        </p>
-                                      </div>
-                                    </div>
-                                    <span className="text-[10px] font-black text-[#E1B15F] bg-[#E1B15F]/10 px-2 py-0.5 rounded-lg">
-                                      R$ {s.price}
-                                    </span>
+                                    <X size={11} /> Fechar
                                   </button>
-                                ))}
-                            </div>
+                                </div>
+
+                                <div className="overflow-y-auto p-1.5 space-y-1 custom-scrollbar">
+                                  {services
+                                    .filter((s) =>
+                                      s.name
+                                        .toLowerCase()
+                                        .includes(aptServiceSearch.toLowerCase())
+                                    )
+                                    .map((s) => (
+                                      <button
+                                        key={s.id}
+                                        type="button"
+                                        onClick={() => {
+                                          setSelectedAptService(s);
+                                          setAptServiceSearch("");
+                                          setShowAptServiceResults(false);
+                                        }}
+                                        className="w-full text-left p-2 hover:bg-slate-800/80 rounded-xl flex items-center justify-between transition-colors group cursor-pointer"
+                                      >
+                                        <div className="flex items-center gap-2">
+                                          <div className="p-1.5 bg-slate-950 group-hover:bg-[#E1B15F]/20 text-slate-400 group-hover:text-[#E1B15F] rounded-lg transition-colors">
+                                            <Scissors size={13} />
+                                          </div>
+                                          <div>
+                                            <p className="text-[11px] font-black text-white uppercase group-hover:text-elite-cyan-400 transition-colors">
+                                              {s.name}
+                                            </p>
+                                            <p className="text-[8px] text-slate-400 font-bold">
+                                              {s.duration || 30} min
+                                            </p>
+                                          </div>
+                                        </div>
+                                        <span className="text-[10px] font-black text-[#E1B15F] bg-[#E1B15F]/10 px-2 py-0.5 rounded-lg">
+                                          R$ {s.price}
+                                        </span>
+                                      </button>
+                                    ))}
+                                  {services.filter((s) =>
+                                    s.name
+                                      .toLowerCase()
+                                      .includes(aptServiceSearch.toLowerCase())
+                                  ).length === 0 && (
+                                    <div className="py-4 text-center text-slate-400 text-xs">
+                                      Nenhum corte encontrado para "{aptServiceSearch}".
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Rodapé com botão Fechar */}
+                                <div className="p-1.5 bg-slate-950/90 border-t border-white/10 shrink-0">
+                                  <button
+                                    type="button"
+                                    id="btn-close-service-dropdown-footer"
+                                    onClick={() => {
+                                      setShowAptServiceResults(false);
+                                      setAptServiceSearch("");
+                                    }}
+                                    className="w-full py-1.5 rounded-xl text-[10px] font-black uppercase bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center gap-1.5 transition-all cursor-pointer border border-white/5"
+                                  >
+                                    <X size={12} className="text-rose-400" />
+                                    <span>Fechar Lista de Serviços</span>
+                                  </button>
+                                </div>
+                              </div>
+                            </>
                           )}
                         </div>
                       )}
