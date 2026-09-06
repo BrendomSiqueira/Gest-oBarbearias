@@ -86,7 +86,7 @@ import {
 } from "recharts";
 
 import { Button, Input, Card, Badge, IconButton, StatCard } from "./components/UI";
-import { StorageService } from "./services/storage";
+import { StorageService, hashPassword } from "./services/storage";
 import { GeminiService } from "./services/gemini";
 import {
   Client,
@@ -3159,10 +3159,11 @@ const App: React.FC = () => {
             user = { uid: cleanUid, email };
 
             const registeredUsers = JSON.parse(localStorage.getItem("simdb_registered_users") || "{}");
+            const passHash = await hashPassword(pass);
             registeredUsers[email.toLowerCase()] = {
               uid: cleanUid,
               email,
-              pass,
+              passHash,
               username: email.split("@")[0],
               shopName,
               phone,
@@ -3230,9 +3231,19 @@ const App: React.FC = () => {
           const existingUser = registeredUsers[email.toLowerCase()];
 
           if (existingUser) {
-            if (existingUser.pass && existingUser.pass !== pass) {
+            const hashedInput = await hashPassword(pass);
+            const isValid = existingUser.passHash
+              ? existingUser.passHash === hashedInput
+              : existingUser.pass === pass;
+            if (!isValid) {
               setAuthError("Senha incorreta.");
               return;
+            }
+            // Upgrade legacy plaintext passwords to secure hash
+            if (existingUser.pass) {
+              delete existingUser.pass;
+              existingUser.passHash = hashedInput;
+              localStorage.setItem("simdb_registered_users", JSON.stringify(registeredUsers));
             }
             const targetUid = isDefaultUser ? "matheus_farias" : existingUser.uid;
             setSimulatedUser({
@@ -3259,10 +3270,11 @@ const App: React.FC = () => {
           const username = email.split("@")[0];
           const uid = "user_" + (username.toLowerCase().replace(/[^a-z0-9]/g, "_") || Date.now().toString());
 
+          const passHash = await hashPassword(pass);
           registeredUsers[email.toLowerCase()] = {
             uid,
             email,
-            pass,
+            passHash,
             username,
             shopName: `Barbearia de ${username}`,
             phone: "",
@@ -7473,18 +7485,19 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
       }
     );
 
-    // Load barber’s appointments to check for real-time collisions
+    // Load barber’s appointments if authorized, fallback gracefully to prevent uncaught permission errors
     const unsubAppointments = onSnapshot(
       collection(db, "users", barberIdFromUrl, "appointments"),
       (snap) => {
         setAppointments(snap.docs.map((d) => d.data() as Appointment));
       },
-      (err) => {
-        console.error("Erro ao carregar agendamentos do barbeiro:", err);
+      () => {
+        // Appointments are protected by security rules; slot availability relies on barber's public unavailableSlots
+        setAppointments([]);
       }
     );
 
-    // Load barber's requests (pending) to check for pending slot collisions
+    // Load barber's requests if authorized, fallback gracefully
     const unsubRequests = onSnapshot(
       collection(db, "users", barberIdFromUrl, "requests"),
       (snap) => {
@@ -7494,8 +7507,9 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
             .filter((r) => r.status === "pending")
         );
       },
-      (err) => {
-        console.error("Erro ao carregar solicitações do barbeiro:", err);
+      () => {
+        // Protected collection to prevent customer PII exposure
+        setAppointmentRequests([]);
       }
     );
 
@@ -7511,17 +7525,22 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
     const cleanPhone = phoneFilter.replace(/\D/g, "");
     if (!cleanPhone || !barberIdFromUrl) return;
     try {
-      const q = query(
-        collection(db, "users", barberIdFromUrl, "requests"),
-        where("clientPhone", "==", cleanPhone),
-      );
-      onSnapshot(q, (snap) => {
-        setMyRequests(
-          snap.docs
-            .map((d) => d.data())
-            .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-        );
-      });
+      const mySavedIds: string[] = JSON.parse(localStorage.getItem("bk_client_request_ids") || "[]");
+      const fetchedDocs: any[] = [];
+      for (const reqId of mySavedIds) {
+        try {
+          const snap = await getDoc(doc(db, "users", barberIdFromUrl, "requests", reqId));
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.clientPhone && data.clientPhone.replace(/\D/g, "") === cleanPhone) {
+              fetchedDocs.push(data);
+            }
+          }
+        } catch {
+          // ignore single doc read errors
+        }
+      }
+      setMyRequests(fetchedDocs.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")));
     } catch (err) {
       console.error("Error fetching my bookings:", err);
     }
@@ -7672,6 +7691,14 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
       localStorage.setItem("bk_client_name", currentName);
       localStorage.setItem("bk_client_phone", currentPhone);
+      try {
+        const prevIds: string[] = JSON.parse(localStorage.getItem("bk_client_request_ids") || "[]");
+        if (!prevIds.includes(requestId)) {
+          localStorage.setItem("bk_client_request_ids", JSON.stringify([...prevIds, requestId]));
+        }
+      } catch {
+        localStorage.setItem("bk_client_request_ids", JSON.stringify([requestId]));
+      }
       setClientSession({ name: currentName, phone: currentPhone });
 
       setBookingSuccess(true);
