@@ -33,17 +33,28 @@
                 400: '#22d3ee',
                 500: '#06b6d4',
                 600: '#0891b2',
+              },
+              'elite-gold': {
+                400: '#f6c97a',
+                500: '#e1b15f',
+                600: '#c89643',
+                700: '#9b712b',
               }
+            },
+            fontFamily: {
+              sans: ['Inter', 'sans-serif'],
+              display: ['Outfit', 'sans-serif'],
+              heading: ['Plus Jakarta Sans', 'sans-serif'],
             }
           }
         }
       }
     </script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet">
     <style>
       body {
         font-family: 'Inter', sans-serif;
-        background: radial-gradient(circle at top left, #020617, #0f172a, #020617);
+        background: radial-gradient(circle at top left, #020617, #0b1329, #020617);
         color: #f8fafc;
         min-height: 100vh;
         min-height: -webkit-fill-available;
@@ -60,9 +71,14 @@
       .safe-top {
         padding-top: env(safe-area-inset-top, 0px);
       }
-      ::-webkit-scrollbar { width: 6px; }
+      ::-webkit-scrollbar { width: 5px; height: 5px; }
       ::-webkit-scrollbar-track { background: #020617; }
-      ::-webkit-scrollbar-thumb { background: #ef4444; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+      ::-webkit-scrollbar-thumb:hover { background: #ef4444; }
+      
+      .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 6px; }
       
       @keyframes snip-left {
         0%, 100% { transform: rotate(-20deg) scale(1); }
@@ -76,9 +92,9 @@
       .animate-scissors-right { animation: snip-right 1.5s ease-in-out infinite; }
       
       .glass-card {
-        background: rgba(15, 23, 42, 0.6);
-        backdrop-filter: blur(12px);
-        border: 1px solid rgba(255, 255, 255, 0.05);
+        background: rgba(15, 23, 42, 0.75);
+        backdrop-filter: blur(16px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
       }
     </style>
   <script type="importmap">
