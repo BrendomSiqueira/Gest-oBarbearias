@@ -223,6 +223,56 @@ const minutesToTime = (min: number): string => {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 };
 
+export const getEffectiveBarberId = (user: any): string => {
+  if (!user) return "matheus_farias";
+  if (user.uid === "offline_demo") return "matheus_farias";
+  const email = user.email?.toLowerCase() || "";
+  if (
+    user.uid === "matheus_farias" ||
+    email.includes("brendom") ||
+    email.includes("matheus") ||
+    email.includes("admin")
+  ) {
+    return "matheus_farias";
+  }
+  return user.uid || "matheus_farias";
+};
+
+export const isSlotOrDateDayOff = (
+  unavailableSlots: { date: string; time?: string; allDay?: boolean }[] | undefined,
+  targetDate: string,
+): boolean => {
+  if (!unavailableSlots || !Array.isArray(unavailableSlots)) return false;
+  return unavailableSlots.some(
+    (u) =>
+      u.date === targetDate &&
+      (!u.time || u.time === "" || u.allDay === true || u.time === "allDay"),
+  );
+};
+
+export const isWeeklyOffDay = (
+  businessHours: { days?: number[] } | undefined,
+  targetDate: string,
+): boolean => {
+  if (!businessHours || !Array.isArray(businessHours.days) || businessHours.days.length === 0) {
+    return false;
+  }
+  const [y, m, d] = targetDate.split("-").map(Number);
+  const dateObj = new Date(y, m - 1, d);
+  return !businessHours.days.includes(dateObj.getDay());
+};
+
+export const isFullDayOff = (
+  sessionOrBarber: { unavailableSlots?: any[]; businessHours?: any } | null | undefined,
+  targetDate: string,
+): boolean => {
+  if (!sessionOrBarber) return false;
+  return (
+    isSlotOrDateDayOff(sessionOrBarber.unavailableSlots, targetDate) ||
+    isWeeklyOffDay(sessionOrBarber.businessHours, targetDate)
+  );
+};
+
 interface BusinessHoursCardProps {
   session: any;
   setSession: React.Dispatch<React.SetStateAction<any>>;
@@ -368,7 +418,7 @@ const BusinessHoursCard: React.FC<BusinessHoursCardProps> = ({
         s ? { ...s, businessHours: updatedHours } : { businessHours: updatedHours }
       );
 
-      const userId = auth.currentUser?.uid || "offline_demo";
+      const userId = getEffectiveBarberId(auth.currentUser);
       if (userId) {
         await setDoc(
           doc(db, "users", userId),
@@ -942,6 +992,11 @@ const App: React.FC = () => {
     return adminEmails.includes(auth.currentUser.email);
   }, [auth.currentUser?.email]);
 
+  const effectiveUserId = useMemo(
+    () => getEffectiveBarberId(auth.currentUser),
+    [auth.currentUser],
+  );
+
   // Detect public booking mode
   const barberIdFromUrl = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
@@ -1017,25 +1072,29 @@ const App: React.FC = () => {
   // Auto-save Profile Settings
   useEffect(() => {
     if (!isAuthenticated || !auth.currentUser || !session) return;
-    const userId = auth.currentUser.uid;
+    const userId = effectiveUserId;
 
     const timeoutId = setTimeout(async () => {
       try {
+        const profileData: any = {
+          username: session.username || "Matheus Farias",
+          shopName: session.shopName || "",
+          phone: session.phone || "",
+          profileImage: session.profileImage || DEFAULT_PROFILE_IMG,
+          monthlyGoal: session.monthlyGoal || 0,
+          unavailableSlots: session.unavailableSlots || [],
+          marketing_msg: marketingMsg || "",
+          campaign_goal: campaignGoal || "",
+          privacy_mode: !!isPrivacyMode,
+          updatedAt: new Date().toISOString(),
+        };
+        if (session.businessHours) {
+          profileData.businessHours = session.businessHours;
+        }
+
         await setDoc(
           doc(db, "users", userId),
-          {
-            username: session.username || "Matheus Farias",
-            shopName: session.shopName || "",
-            phone: session.phone || "",
-            profileImage: session.profileImage || DEFAULT_PROFILE_IMG,
-            monthlyGoal: session.monthlyGoal || 0,
-            businessHours: session.businessHours || null,
-            unavailableSlots: session.unavailableSlots || [],
-            marketing_msg: marketingMsg,
-            campaign_goal: campaignGoal,
-            privacy_mode: isPrivacyMode,
-            updatedAt: new Date().toISOString(),
-          },
+          profileData,
           { merge: true },
         );
       } catch (err) {
@@ -1056,23 +1115,15 @@ const App: React.FC = () => {
     campaignGoal,
     isPrivacyMode,
     isAuthenticated,
+    effectiveUserId,
   ]);
 
   // Data Listeners
   useEffect(() => {
     if (!isAuthenticated || !auth.currentUser) return;
 
-    // The barbershop data (320+ appointments, cuts, clients, services, adjustments) is stored under matheus_farias
-    const userId =
-      auth.currentUser.uid === "offline_demo"
-        ? "offline_demo"
-        : (auth.currentUser.uid === "matheus_farias" ||
-           isAdmin ||
-           auth.currentUser.email?.toLowerCase().includes("matheus") ||
-           auth.currentUser.email?.toLowerCase().includes("admin") ||
-           auth.currentUser.email?.toLowerCase().includes("brendom")
-            ? "matheus_farias"
-            : (auth.currentUser.uid || "matheus_farias"));
+    // The barbershop data (320+ appointments, cuts, clients, services, adjustments) is stored under effectiveUserId
+    const userId = effectiveUserId;
 
     const unsubProfile = onSnapshot(
       doc(db, "users", userId),
@@ -1558,7 +1609,7 @@ const App: React.FC = () => {
   const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !auth.currentUser) return;
-    const userId = auth.currentUser.uid;
+    const userId = effectiveUserId;
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
@@ -1613,14 +1664,14 @@ const App: React.FC = () => {
       if (!auth.currentUser) return;
       try {
         await deleteDoc(
-          doc(db, "users", auth.currentUser.uid, "drinks", drinkId),
+          doc(db, "users", effectiveUserId, "drinks", drinkId),
         );
         showToast("Item removido do bar!");
       } catch (err) {
         handleFirestoreError(
           err,
           OperationType.DELETE,
-          `users/${auth.currentUser.uid}/drinks/${drinkId}`,
+          `users/${effectiveUserId}/drinks/${drinkId}`,
         );
       }
     }
@@ -1635,14 +1686,14 @@ const App: React.FC = () => {
       if (!auth.currentUser) return;
       try {
         await deleteDoc(
-          doc(db, "users", auth.currentUser.uid, "materials", materialId),
+          doc(db, "users", effectiveUserId, "materials", materialId),
         );
         showToast("Insumo removido do estoque!");
       } catch (err) {
         handleFirestoreError(
           err,
           OperationType.DELETE,
-          `users/${auth.currentUser.uid}/materials/${materialId}`,
+          `users/${effectiveUserId}/materials/${materialId}`,
         );
       }
     }
@@ -1676,7 +1727,7 @@ const App: React.FC = () => {
 
   const toggleCompleteFlow = async (id: string, paidStatus: boolean, customPrice?: number) => {
     if (!auth.currentUser) return;
-    const userId = auth.currentUser.uid;
+    const userId = effectiveUserId;
     const apt = appointments.find((a) => a.id === id);
     if (!apt) return;
 
@@ -1721,7 +1772,7 @@ const App: React.FC = () => {
   const sellDrink = async (drink: Drink) => {
     if (drink.stock <= 0) return showToast("Sem estoque!", "error");
     if (!auth.currentUser) return;
-    const userId = auth.currentUser.uid;
+    const userId = effectiveUserId;
     const saleId = Date.now().toString();
 
     try {
@@ -1967,7 +2018,7 @@ const App: React.FC = () => {
     if (!auth.currentUser) return;
     try {
       await updateDoc(
-        doc(db, "users", auth.currentUser.uid, "notifications", id),
+        doc(db, "users", effectiveUserId, "notifications", id),
         {
           read: true,
         },
@@ -2267,36 +2318,55 @@ const App: React.FC = () => {
   };
 
   const renderOnlineBookingView = () => {
-    const isDayOff = session?.unavailableSlots?.some(
-      (u) => u.date === selectedBookingDate && !u.time,
+    const isExplicitDayOff = isSlotOrDateDayOff(
+      session?.unavailableSlots,
+      selectedBookingDate,
     );
+    const isWeeklyDayOff = isWeeklyOffDay(
+      session?.businessHours,
+      selectedBookingDate,
+    );
+    const isDayOff = isExplicitDayOff || isWeeklyDayOff;
 
     const toggleDayOff = async () => {
       if (!session) return;
-      const userId = auth.currentUser?.uid;
-      const newSlots = isDayOff
-        ? (session.unavailableSlots || []).filter(
-            (u) => !(u.date === selectedBookingDate && !u.time),
+      const targetUserId = effectiveUserId;
+      const currentSlots = session.unavailableSlots || [];
+      const newSlots = isExplicitDayOff
+        ? currentSlots.filter(
+            (u) =>
+              !(
+                u.date === selectedBookingDate &&
+                (!u.time || u.time === "" || u.allDay === true || u.time === "allDay")
+              ),
           )
         : [
-            ...(session.unavailableSlots || []).filter(
-              (u) => u.date !== selectedBookingDate,
-            ),
-            { date: selectedBookingDate },
+            ...currentSlots.filter((u) => u.date !== selectedBookingDate),
+            { date: selectedBookingDate, allDay: true },
           ];
 
       setSession({ ...session, unavailableSlots: newSlots });
-      if (userId) {
+      if (targetUserId) {
         try {
-          await updateDoc(doc(db, "users", userId), {
-            unavailableSlots: newSlots,
-          });
+          await setDoc(
+            doc(db, "users", targetUserId),
+            {
+              unavailableSlots: newSlots,
+              updatedAt: new Date().toISOString(),
+            },
+            { merge: true },
+          );
         } catch (err) {
           console.error("Erro ao salvar folga:", err);
           showToast("Erro ao sincronizar folga com o banco de dados.", "error");
+          return;
         }
       }
-      showToast(isDayOff ? "Dia liberado para agendamentos!" : "Dia marcado como folga com sucesso!");
+      showToast(
+        isExplicitDayOff
+          ? "Dia liberado para agendamentos!"
+          : "Dia marcado como folga com sucesso!",
+      );
     };
 
     const blockHours = session?.businessHours || {
@@ -2317,7 +2387,7 @@ const App: React.FC = () => {
 
     const toggleSlotBlock = async (slotTime: string) => {
       if (!session) return;
-      const userId = auth.currentUser?.uid;
+      const targetUserId = effectiveUserId;
       const currentSlots = session.unavailableSlots || [];
       const isBlocked = currentSlots.some(
         (u) => u.date === selectedBookingDate && u.time === slotTime,
@@ -2329,18 +2399,27 @@ const App: React.FC = () => {
           (u) => !(u.date === selectedBookingDate && u.time === slotTime),
         );
       } else {
-        newSlots = [...currentSlots, { date: selectedBookingDate, time: slotTime }];
+        newSlots = [
+          ...currentSlots,
+          { date: selectedBookingDate, time: slotTime },
+        ];
       }
 
       setSession({ ...session, unavailableSlots: newSlots });
-      if (userId) {
+      if (targetUserId) {
         try {
-          await updateDoc(doc(db, "users", userId), {
-            unavailableSlots: newSlots,
-          });
+          await setDoc(
+            doc(db, "users", targetUserId),
+            {
+              unavailableSlots: newSlots,
+              updatedAt: new Date().toISOString(),
+            },
+            { merge: true },
+          );
         } catch (err) {
           console.error("Erro ao salvar bloqueio de horário:", err);
           showToast("Erro ao sincronizar bloqueio de horário.", "error");
+          return;
         }
       }
       showToast(
@@ -2350,7 +2429,7 @@ const App: React.FC = () => {
       );
     };
 
-    const clientBookingUrl = `${window.location.origin}/?barberId=${auth.currentUser?.uid || ""}`;
+    const clientBookingUrl = `${window.location.origin}/?barberId=${effectiveUserId}`;
 
     const handleCopyLink = () => {
       navigator.clipboard.writeText(clientBookingUrl);
@@ -2836,7 +2915,7 @@ const App: React.FC = () => {
                 </div>
 
                 {/* Day-Off Status Banner */}
-                {isDayOff ? (
+                {isExplicitDayOff ? (
                   <div className="bg-rose-500/10 border border-rose-500/25 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in">
                     <div className="flex items-center gap-3">
                       <div className="p-3 bg-rose-500/15 text-rose-400 rounded-xl shrink-0">
@@ -2844,10 +2923,10 @@ const App: React.FC = () => {
                       </div>
                       <div>
                         <p className="text-sm font-black text-rose-300 uppercase tracking-tight">
-                          Este dia está marcado como FOLGA
+                          Este dia está marcado como FOLGA PONTUAL
                         </p>
                         <p className="text-xs text-rose-400/80 font-medium mt-0.5">
-                          Nenhum cliente conseguirá agendar horários online nesta data.
+                          Nenhum cliente conseguirá agendar horários online nesta data. A agenda deste dia está completamente travada.
                         </p>
                       </div>
                     </div>
@@ -2860,6 +2939,32 @@ const App: React.FC = () => {
                       className="shrink-0"
                     >
                       Liberar Dia para Agendamentos
+                    </Button>
+                  </div>
+                ) : isWeeklyDayOff ? (
+                  <div className="bg-amber-500/10 border border-amber-500/25 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in">
+                    <div className="flex items-center gap-3">
+                      <div className="p-3 bg-amber-500/15 text-amber-400 rounded-xl shrink-0">
+                        <AlertCircle size={20} />
+                      </div>
+                      <div>
+                        <p className="text-sm font-black text-amber-300 uppercase tracking-tight">
+                          Este dia é uma FOLGA SEMANAL REGULAR
+                        </p>
+                        <p className="text-xs text-amber-400/80 font-medium mt-0.5">
+                          Este dia da semana não faz parte do seu expediente padrão configurado. Clientes já não conseguem agendar.
+                        </p>
+                      </div>
+                    </div>
+
+                    <Button
+                      variant="danger"
+                      size="md"
+                      icon={<Lock size={15} />}
+                      onClick={toggleDayOff}
+                      className="shrink-0"
+                    >
+                      Fixar Bloqueio Específico
                     </Button>
                   </div>
                 ) : (
@@ -3038,7 +3143,7 @@ const App: React.FC = () => {
 
     setIsUpdatingLoginName(true);
     try {
-      const userId = auth.currentUser.uid;
+      const userId = effectiveUserId;
       const currentEmail = auth.currentUser.email || "";
 
       // Re-authenticate first to prevent "requires-recent-login" errors
@@ -3435,7 +3540,7 @@ const App: React.FC = () => {
     photo: string | null,
   ) => {
     if (!auth.currentUser) return;
-    const userId = auth.currentUser.uid;
+    const userId = effectiveUserId;
     const clientId = Date.now().toString();
 
     try {
@@ -3461,7 +3566,7 @@ const App: React.FC = () => {
 
   const handleEditServiceSave = async (serviceId: string) => {
     if (!auth.currentUser) return;
-    const userId = auth.currentUser.uid;
+    const userId = effectiveUserId;
     if (!editingServiceName.trim()) {
       showToast("O nome do serviço não pode ser vazio!", "error");
       return;
@@ -3499,7 +3604,7 @@ const App: React.FC = () => {
     requestId: string,
     action: "accept" | "reject",
   ) => {
-    const userId = auth.currentUser?.uid || "offline_demo";
+    const userId = effectiveUserId;
     const request = appointmentRequests.find((r) => r.id === requestId);
     if (!request) return;
 
@@ -3580,7 +3685,7 @@ const App: React.FC = () => {
   };
 
   const handleRejectWithReason = async (requestId: string, reasonText: string) => {
-    const userId = auth.currentUser?.uid || "offline_demo";
+    const userId = effectiveUserId;
     const request = appointmentRequests.find((r) => r.id === requestId);
     if (!request) return;
 
@@ -3644,8 +3749,8 @@ const App: React.FC = () => {
 
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingClient || !auth.currentUser) return;
-    const userId = auth.currentUser.uid;
+    if (!editingClient) return;
+    const userId = effectiveUserId;
     const f = new FormData(e.target as HTMLFormElement);
     const name = f.get("n") as string;
     const phone = f.get("p") as string;
@@ -4500,7 +4605,7 @@ const App: React.FC = () => {
                         );
 
                       const id = Date.now().toString();
-                      const userId = auth.currentUser?.uid;
+                      const userId = effectiveUserId;
                       if (!userId) return;
                       try {
                         await setDoc(
@@ -4578,6 +4683,17 @@ const App: React.FC = () => {
                         onChange={(e) => setSelectedDate(e.target.value)}
                         required
                       />
+                      {isSlotOrDateDayOff(session?.unavailableSlots, selectedDate) ? (
+                        <p className="text-[10px] text-rose-400 font-bold bg-rose-500/10 border border-rose-500/20 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+                          <Lock size={12} className="shrink-0" />
+                          Atenção: este dia está marcado como Folga nas configurações da barbearia.
+                        </p>
+                      ) : isWeeklyOffDay(session?.businessHours, selectedDate) ? (
+                        <p className="text-[10px] text-amber-400 font-bold bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5">
+                          <Clock size={12} className="shrink-0" />
+                          Atenção: este dia não faz parte do seu expediente semanal regular.
+                        </p>
+                      ) : null}
                     </div>
 
                     {/* SELEÇÃO FLUIDA DE HORÁRIOS */}
@@ -5084,6 +5200,18 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
+                  {isSlotOrDateDayOff(session?.unavailableSlots, selectedDate) ? (
+                    <div className="flex items-center gap-2.5 px-3.5 py-2.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-rose-300 text-xs font-bold">
+                      <Lock size={15} className="text-rose-400 shrink-0" />
+                      <span>Data com <strong>Folga Pontual</strong> ativa. Agendamentos públicos estão desativados para este dia.</span>
+                    </div>
+                  ) : isWeeklyOffDay(session?.businessHours, selectedDate) ? (
+                    <div className="flex items-center gap-2.5 px-3.5 py-2.5 bg-amber-500/10 border border-amber-500/25 rounded-xl text-amber-300 text-xs font-bold">
+                      <Clock size={15} className="text-amber-400 shrink-0" />
+                      <span>Dia <strong>Fora do Expediente Regular</strong>. Barbearia fechada conforme sua escala semanal.</span>
+                    </div>
+                  ) : null}
+
                   {/* Resumo Métrico Rápido do Dia */}
                   {(() => {
                     const dayApts = appointments.filter((a) => a.date === selectedDate);
@@ -5337,8 +5465,8 @@ const App: React.FC = () => {
                                     variant="ghost"
                                     size="sm"
                                     onClick={async () => {
-                                      if (!auth.currentUser) return;
-                                      const userId = auth.currentUser.uid;
+                                      const userId = effectiveUserId;
+                                      if (!userId) return;
                                       try {
                                         await deleteDoc(
                                           doc(
@@ -5493,8 +5621,8 @@ const App: React.FC = () => {
                         variant="danger"
                         size="md"
                         onClick={async () => {
-                          if (!auth.currentUser) return;
-                          const userId = auth.currentUser.uid;
+                          const userId = effectiveUserId;
+                          if (!userId) return;
                           try {
                             await deleteDoc(
                               doc(db, "users", userId, "clients", c.id),
@@ -5608,8 +5736,8 @@ const App: React.FC = () => {
                             variant="ghost"
                             size="sm"
                             onClick={async () => {
-                              if (!auth.currentUser) return;
-                              const userId = auth.currentUser.uid;
+                              const userId = effectiveUserId;
+                              if (!userId) return;
                               try {
                                 await deleteDoc(
                                   doc(
@@ -5837,7 +5965,7 @@ const App: React.FC = () => {
                           (e.nativeEvent as any).submitter.name === "add";
                         const amount = Number(f.get("a"));
                         const id = Date.now().toString();
-                        const userId = auth.currentUser?.uid;
+                        const userId = effectiveUserId;
                         if (!userId) return;
                         try {
                           await setDoc(
@@ -5914,7 +6042,7 @@ const App: React.FC = () => {
                     onSubmit={async (e) => {
                       e.preventDefault();
                       const id = Date.now().toString();
-                      const userId = auth.currentUser?.uid;
+                      const userId = effectiveUserId;
                       if (!userId) return;
                       try {
                         await setDoc(doc(db, "users", userId, "drinks", id), {
@@ -6061,8 +6189,9 @@ const App: React.FC = () => {
                                 size="sm"
                                 className="flex-1"
                                 onClick={async () => {
-                                  if (!auth.currentUser || !editingDrinkName.trim()) return;
-                                  const userId = auth.currentUser.uid;
+                                  if (!editingDrinkName.trim()) return;
+                                  const userId = effectiveUserId;
+                                  if (!userId) return;
                                   try {
                                     await updateDoc(
                                       doc(db, "users", userId, "drinks", d.id),
@@ -6141,8 +6270,8 @@ const App: React.FC = () => {
                                   variant="secondary"
                                   size="sm"
                                   onClick={async () => {
-                                    if (!auth.currentUser) return;
-                                    const userId = auth.currentUser.uid;
+                                    const userId = effectiveUserId;
+                                    if (!userId) return;
                                     try {
                                       await updateDoc(
                                         doc(db, "users", userId, "drinks", d.id),
@@ -6163,8 +6292,8 @@ const App: React.FC = () => {
                                   variant="secondary"
                                   size="sm"
                                   onClick={async () => {
-                                    if (!auth.currentUser) return;
-                                    const userId = auth.currentUser.uid;
+                                    const userId = effectiveUserId;
+                                    if (!userId) return;
                                     try {
                                       await updateDoc(
                                         doc(db, "users", userId, "drinks", d.id),
@@ -6215,7 +6344,7 @@ const App: React.FC = () => {
                     e.preventDefault();
                     const f = new FormData(e.target as HTMLFormElement);
                     const id = Date.now().toString();
-                    const userId = auth.currentUser?.uid;
+                    const userId = effectiveUserId;
                     if (!userId) return;
                     try {
                       await setDoc(doc(db, "users", userId, "materials", id), {
@@ -6284,8 +6413,8 @@ const App: React.FC = () => {
                             variant="secondary"
                             size="sm"
                             onClick={async () => {
-                              if (!auth.currentUser) return;
-                              const userId = auth.currentUser.uid;
+                              const userId = effectiveUserId;
+                              if (!userId) return;
                               try {
                                 await updateDoc(
                                   doc(db, "users", userId, "materials", m.id),
@@ -6306,8 +6435,8 @@ const App: React.FC = () => {
                             variant="secondary"
                             size="sm"
                             onClick={async () => {
-                              if (!auth.currentUser) return;
-                              const userId = auth.currentUser.uid;
+                              const userId = effectiveUserId;
+                              if (!userId) return;
                               try {
                                 await updateDoc(
                                   doc(db, "users", userId, "materials", m.id),
@@ -6445,7 +6574,7 @@ const App: React.FC = () => {
                     <div className="flex items-center gap-2 px-3 py-2 bg-slate-900/80 rounded-xl border border-white/5 overflow-hidden">
                       <Smartphone size={14} className="text-elite-cyan-400 shrink-0" />
                       <code className="text-[10px] text-elite-cyan-300 font-mono truncate flex-1 select-all">
-                        {window.location.origin}/?barberId={auth.currentUser?.uid || "offline_demo"}
+                        {window.location.origin}/?barberId={effectiveUserId}
                       </code>
                     </div>
 
@@ -6455,7 +6584,7 @@ const App: React.FC = () => {
                         variant="cyan"
                         className="h-10 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5"
                         onClick={() => {
-                          const url = `${window.location.origin}/?barberId=${auth.currentUser?.uid || "offline_demo"}`;
+                          const url = `${window.location.origin}/?barberId=${effectiveUserId}`;
                           navigator.clipboard.writeText(url);
                           showToast("Link copiado para a área de transferência!");
                         }}
@@ -6468,7 +6597,7 @@ const App: React.FC = () => {
                         variant="lilac"
                         className="h-10 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 border-none text-white"
                         onClick={() => {
-                          const url = `${window.location.origin}/?barberId=${auth.currentUser?.uid || "offline_demo"}`;
+                          const url = `${window.location.origin}/?barberId=${effectiveUserId}`;
                           const shop = session?.shopName || "Barbearia";
                           const text = `Olá! 💈 Agende seu horário na ${shop} de forma rápida pelo nosso link exclusivo:\n\n${url}`;
                           window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
@@ -6482,7 +6611,7 @@ const App: React.FC = () => {
                         variant="outline"
                         className="h-10 border-slate-700 hover:border-slate-500 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5"
                         onClick={() => {
-                          const url = `${window.location.origin}/?barberId=${auth.currentUser?.uid || "offline_demo"}`;
+                          const url = `${window.location.origin}/?barberId=${effectiveUserId}`;
                           window.open(url, "_blank");
                         }}
                       >
@@ -6537,10 +6666,10 @@ const App: React.FC = () => {
                       variant="ghost"
                       className="w-full border border-elite-cyan-500/20 text-elite-cyan-400 hover:bg-elite-cyan-500/10"
                       onClick={async () => {
-                        if (!auth.currentUser || !session) return;
+                        if (!session) return;
                         setIsSaving(true);
                         const migrated = await migrateLocalData(
-                          auth.currentUser.uid,
+                          effectiveUserId,
                           session.username,
                         );
                         setIsSaving(false);
@@ -6874,7 +7003,7 @@ const App: React.FC = () => {
                     e.preventDefault();
                     const f = new FormData(e.target as HTMLFormElement);
                     const id = Date.now().toString();
-                    const userId = auth.currentUser?.uid;
+                    const userId = effectiveUserId;
                     if (!userId) return;
                     try {
                       await setDoc(doc(db, "users", userId, "services", id), {
@@ -7001,8 +7130,8 @@ const App: React.FC = () => {
                               variant="danger"
                               size="sm"
                               onClick={async () => {
-                                if (!auth.currentUser) return;
-                                const userId = auth.currentUser.uid;
+                                const userId = effectiveUserId;
+                                if (!userId) return;
                                 try {
                                   await deleteDoc(
                                     doc(db, "users", userId, "services", s.id),
@@ -7306,6 +7435,8 @@ interface PublicBookingViewProps {
 }
 
 const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }) => {
+  const effectiveBarberId = useMemo(() => getEffectiveBarberId(barberIdFromUrl), [barberIdFromUrl]);
+
   const [clientSession, setClientSession] = useState<{ name: string; phone: string } | null>(() => {
     const savedName = localStorage.getItem("bk_client_name");
     const savedPhone = localStorage.getItem("bk_client_phone");
@@ -7405,7 +7536,16 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
   const [viewMode, setViewMode] = useState<"booking" | "my-bookings">("booking");
   const [myRequests, setMyRequests] = useState<any[]>([]);
 
-  const [bookingBarber, setBookingBarber] = useState<any>(null);
+  const [bookingBarber, setBookingBarber] = useState<any>(() => {
+    try {
+      const cached = localStorage.getItem("local_session_data");
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed) return parsed;
+      }
+    } catch {}
+    return null;
+  });
   const [bookingServices, setBookingServices] = useState<Service[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [appointmentRequests, setAppointmentRequests] = useState<any[]>([]);
@@ -7436,18 +7576,18 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
   }, [viewMode, clientSession]);
 
   useEffect(() => {
-    if (phoneFilter && barberIdFromUrl) {
+    if (phoneFilter && effectiveBarberId) {
       fetchMyBookings();
     }
-  }, [phoneFilter, barberIdFromUrl]);
+  }, [phoneFilter, effectiveBarberId]);
 
   // Load Barber profile and services
   useEffect(() => {
-    if (!barberIdFromUrl) return;
+    if (!effectiveBarberId) return;
     setBookingError(null);
 
     // Initial load
-    getDoc(doc(db, "users", barberIdFromUrl))
+    getDoc(doc(db, "users", effectiveBarberId))
       .then((snap) => {
         if (snap.exists()) {
           setBookingBarber(snap.data());
@@ -7459,7 +7599,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
     // Realtime listeners
     const unsubBarber = onSnapshot(
-      doc(db, "users", barberIdFromUrl),
+      doc(db, "users", effectiveBarberId),
       (snap) => {
         if (snap.exists()) {
           setBookingBarber(snap.data());
@@ -7475,7 +7615,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
     );
 
     const unsubServices = onSnapshot(
-      collection(db, "users", barberIdFromUrl, "services"),
+      collection(db, "users", effectiveBarberId, "services"),
       (snap) => {
         const svcs = snap.docs.map((d) => d.data() as Service);
         setBookingServices(svcs);
@@ -7487,7 +7627,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
     // Load barber’s appointments if authorized, fallback gracefully to prevent uncaught permission errors
     const unsubAppointments = onSnapshot(
-      collection(db, "users", barberIdFromUrl, "appointments"),
+      collection(db, "users", effectiveBarberId, "appointments"),
       (snap) => {
         setAppointments(snap.docs.map((d) => d.data() as Appointment));
       },
@@ -7499,7 +7639,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
     // Load barber's requests if authorized, fallback gracefully
     const unsubRequests = onSnapshot(
-      collection(db, "users", barberIdFromUrl, "requests"),
+      collection(db, "users", effectiveBarberId, "requests"),
       (snap) => {
         setAppointmentRequests(
           snap.docs
@@ -7519,17 +7659,17 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
       unsubAppointments();
       unsubRequests();
     };
-  }, [barberIdFromUrl]);
+  }, [effectiveBarberId]);
 
   const fetchMyBookings = async () => {
     const cleanPhone = phoneFilter.replace(/\D/g, "");
-    if (!cleanPhone || !barberIdFromUrl) return;
+    if (!cleanPhone || !effectiveBarberId) return;
     try {
       const mySavedIds: string[] = JSON.parse(localStorage.getItem("bk_client_request_ids") || "[]");
       const fetchedDocs: any[] = [];
       for (const reqId of mySavedIds) {
         try {
-          const snap = await getDoc(doc(db, "users", barberIdFromUrl, "requests", reqId));
+          const snap = await getDoc(doc(db, "users", effectiveBarberId, "requests", reqId));
           if (snap.exists()) {
             const data = snap.data();
             if (data.clientPhone && data.clientPhone.replace(/\D/g, "") === cleanPhone) {
@@ -7600,10 +7740,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
   const getAvailableSlots = (date: string, service: Service | null) => {
     if (!bookingBarber?.businessHours) return [];
-    const dayOfWeek = new Date(date + "T12:00:00").getDay();
-    if (!bookingBarber.businessHours.days.includes(dayOfWeek)) return [];
-
-    if (bookingBarber.unavailableSlots?.some((u: any) => u.date === date && !u.time)) return [];
+    if (isFullDayOff(bookingBarber, date)) return [];
 
     const duration = service?.duration || 30;
 
@@ -7618,7 +7755,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
     return allSlots.filter((time) => {
       const isBlockedSlot = bookingBarber.unavailableSlots?.some(
-        (u: any) => u.date === date && u.time === time,
+        (u: any) => u.date === date && (u.time === time || !u.time || u.allDay === true || u.time === "allDay"),
       );
       if (isBlockedSlot) return false;
 
@@ -7654,7 +7791,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
     const currentName = clientSession ? clientSession.name : name.trim();
     const currentPhone = clientSession ? clientSession.phone.replace(/\D/g, "") : phone.replace(/\D/g, "");
 
-    if (!selectedService || !barberIdFromUrl || !bookingDate || !bookingTime) {
+    if (!selectedService || !effectiveBarberId || !bookingDate || !bookingTime) {
       showToast("Por favor, selecione serviço, data e horário.", "error");
       return;
     }
@@ -7678,7 +7815,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
     const requestId = Date.now().toString();
     try {
-      await setDoc(doc(db, "users", barberIdFromUrl, "requests", requestId), {
+      await setDoc(doc(db, "users", effectiveBarberId, "requests", requestId), {
         id: requestId,
         serviceId: selectedService.id,
         date: bookingDate,
@@ -8113,20 +8250,23 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
                       const isSelected = bookingDate === cell.dateStr;
                       const todayStr = new Date().toISOString().split("T")[0];
                       const isPast = cell.dateStr < todayStr;
-                      const dateObj = new Date(cell.dateStr + "T12:00:00");
-                      const dayOfWeek = dateObj.getDay();
-                      const isBusinessDay = bookingBarber?.businessHours?.days?.includes(dayOfWeek);
-                      const isBlocked = bookingBarber?.unavailableSlots?.some((u: any) => u.date === cell.dateStr && !u.time);
+                      const isExplicitDayOff = isSlotOrDateDayOff(bookingBarber?.unavailableSlots, cell.dateStr);
+                      const isWeeklyDayOff = isWeeklyOffDay(bookingBarber?.businessHours, cell.dateStr);
+                      const isDayOff = isExplicitDayOff || isWeeklyDayOff;
 
-                      const isDisabled = isPast || !isBusinessDay || isBlocked;
+                      const isDisabled = isPast || isDayOff;
                       const slots = isDisabled ? [] : getAvailableSlots(cell.dateStr, selectedService);
                       const hasSlots = slots.length > 0;
 
                       let btnStyle = "border border-white/5 bg-slate-900/60 text-slate-300 hover:border-slate-600";
                       if (isSelected) {
                         btnStyle = "bg-[#E1B15F] text-slate-950 font-black shadow-md shadow-[#E1B15F]/20 border-none scale-105";
-                      } else if (isDisabled) {
+                      } else if (isPast) {
                         btnStyle = "opacity-15 cursor-not-allowed bg-transparent text-slate-600 border-none pointer-events-none";
+                      } else if (isExplicitDayOff) {
+                        btnStyle = "border border-rose-500/20 bg-rose-500/10 text-rose-400 opacity-70 cursor-not-allowed";
+                      } else if (isWeeklyDayOff) {
+                        btnStyle = "border border-amber-500/15 bg-amber-500/5 text-amber-500/40 opacity-40 cursor-not-allowed";
                       } else if (!hasSlots) {
                         btnStyle = "border border-red-500/10 bg-red-500/5 text-slate-500";
                       } else {
@@ -8139,13 +8279,31 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
                           type="button"
                           disabled={isDisabled}
                           onClick={() => {
+                            if (isDisabled) return;
                             setBookingDate(cell.dateStr);
                             setBookingTime("");
                           }}
+                          title={
+                            isExplicitDayOff
+                              ? "Dia de folga do barbeiro"
+                              : isWeeklyDayOff
+                              ? "Fechado (fora do expediente)"
+                              : isPast
+                              ? "Data anterior"
+                              : `${slots.length} horários disponíveis`
+                          }
                           className={`aspect-square flex flex-col items-center justify-center rounded-lg p-0.5 transition-all relative cursor-pointer ${btnStyle}`}
                         >
                           <span className="text-xs font-black">{cell.day}</span>
-                          {!isDisabled && (
+                          {isExplicitDayOff ? (
+                            <span className="text-[6px] font-black uppercase text-rose-400 leading-none">
+                              Folga
+                            </span>
+                          ) : isWeeklyDayOff ? (
+                            <span className="text-[6px] font-bold uppercase text-amber-500/60 leading-none">
+                              Fech.
+                            </span>
+                          ) : !isDisabled && (
                             <span className={`text-[6px] font-bold uppercase leading-none tracking-tighter ${
                               isSelected ? "text-slate-950" : hasSlots ? "text-emerald-400" : "text-red-400"
                             }`}>
@@ -8191,10 +8349,30 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
                           );
                         })}
                       </div>
+                    ) : isSlotOrDateDayOff(bookingBarber?.unavailableSlots, bookingDate) ? (
+                      <div className="p-3.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-center space-y-1">
+                        <p className="text-[11px] text-rose-300 font-black uppercase flex items-center justify-center gap-1.5">
+                          <Lock size={13} className="text-rose-400" />
+                          Dia de Folga do Barbeiro
+                        </p>
+                        <p className="text-[10px] text-rose-400/80 font-medium">
+                          A barbearia estará fechada nesta data. Por favor, escolha outro dia com horários livres no calendário.
+                        </p>
+                      </div>
+                    ) : isWeeklyOffDay(bookingBarber?.businessHours, bookingDate) ? (
+                      <div className="p-3.5 bg-amber-500/10 border border-amber-500/25 rounded-xl text-center space-y-1">
+                        <p className="text-[11px] text-amber-300 font-black uppercase flex items-center justify-center gap-1.5">
+                          <Lock size={13} className="text-amber-400" />
+                          Fora do Expediente
+                        </p>
+                        <p className="text-[10px] text-amber-400/80 font-medium">
+                          A barbearia não abre neste dia da semana. Selecione um dia útil no calendário.
+                        </p>
+                      </div>
                     ) : (
                       <div className="p-3 bg-red-500/5 border border-red-500/20 rounded-xl text-center">
                         <p className="text-[10px] text-red-400 font-black uppercase">
-                          Sem horários vagos neste dia. Escolha outra data.
+                          Todos os horários deste dia já foram preenchidos. Escolha outra data.
                         </p>
                       </div>
                     )}
