@@ -3,6 +3,8 @@ import { getAuth } from 'firebase/auth';
 import { 
   initializeFirestore,
   getFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   doc as originalDoc,
   setDoc as originalSetDoc,
   getDoc as originalGetDoc,
@@ -16,15 +18,24 @@ import {
 } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
 
-// Initialize Firebase SDK with long polling to ensure reliable connectivity in web containers and proxies
+// Initialize Firebase SDK with persistent multi-tab cache and auto-detect long polling
 const app = initializeApp(firebaseConfig);
 let firestoreDb: any;
 try {
   firestoreDb = initializeFirestore(app, {
-    experimentalForceLongPolling: true,
+    experimentalAutoDetectLongPolling: true,
+    localCache: typeof window !== 'undefined'
+      ? persistentLocalCache({ tabManager: persistentMultipleTabManager() })
+      : undefined
   }, firebaseConfig.firestoreDatabaseId);
 } catch {
-  firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  try {
+    firestoreDb = initializeFirestore(app, {
+      experimentalAutoDetectLongPolling: true,
+    }, firebaseConfig.firestoreDatabaseId);
+  } catch {
+    firestoreDb = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
 }
 export const db = firestoreDb;
 
@@ -179,10 +190,8 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 
   if (isQuotaOrAvailabilityFailure) {
     console.warn('Firestore is temporarily offline or unavailable. Operating with local cache/contingency mode for path:', path);
-    safeStorage.setItem('force_offline', 'true');
-    const currentUid = auth.currentUser?.uid || 'matheus_farias';
-    safeStorage.setItem('simdb_active_uid', currentUid);
-    throw new Error('Firestore is currently offline or unreachable. Using local cache.');
+    activateContingencyMode();
+    return undefined as never;
   }
 
   const errInfo: FirestoreErrorInfo = {
@@ -309,7 +318,10 @@ const saveMockCollectionData = (collPath: string, data: any[]) => {
 
 export function doc(database: any, ...pathSegments: string[]) {
   const fullPath = pathSegments.join('/');
-  const isOffline = fullPath.includes('offline_demo') || pathSegments[1] === 'offline_demo';
+  const isOffline = 
+    fullPath.includes('offline_demo') || 
+    pathSegments[1] === 'offline_demo' || 
+    safeStorage.getItem('force_offline') === 'true';
   const ref = originalDoc(database, ...pathSegments as [string, ...string[]]);
   
   (ref as any).isOffline = isOffline;
@@ -319,7 +331,10 @@ export function doc(database: any, ...pathSegments: string[]) {
 
 export function collection(database: any, ...pathSegments: string[]) {
   const fullPath = pathSegments.join('/');
-  const isOffline = fullPath.includes('offline_demo') || pathSegments[1] === 'offline_demo';
+  const isOffline = 
+    fullPath.includes('offline_demo') || 
+    pathSegments[1] === 'offline_demo' || 
+    safeStorage.getItem('force_offline') === 'true';
   const ref = originalCollection(database, ...pathSegments as [string, ...string[]]);
   
   (ref as any).isOffline = isOffline;
@@ -470,6 +485,34 @@ export async function getDoc(docRef: any) {
     }
     return res;
   } catch (err) {
+    if (isQuotaOrAvailabilityError(err)) {
+      activateContingencyMode();
+      const path = docRef.customPath;
+      if (path) {
+        const segments = path.split('/');
+        if (segments.length === 2) {
+          const uId = segments[1];
+          const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
+          const userData = safeStorage.getItem(storageKey);
+          if (userData) {
+            try {
+              return { exists: () => true, data: () => JSON.parse(userData) };
+            } catch {}
+          }
+          return { exists: () => true, data: () => getInitialUserData() };
+        } else {
+          const collPath = segments.slice(0, -1).join('_');
+          const docId = segments[segments.length - 1];
+          const items = getMockCollectionData(collPath);
+          const matched = items.find((i: any) => i.id === docId);
+          return {
+            exists: () => !!matched,
+            data: () => matched
+          };
+        }
+      }
+      return { exists: () => false, data: () => undefined };
+    }
     return handleFirestoreError(err, OperationType.GET, docRef.customPath || '');
   }
 }
@@ -478,7 +521,14 @@ export async function getDocFromServer(docRef: any) {
   if (docRef.isOffline) {
     return getDoc(docRef);
   }
-  return originalGetDocFromServer(docRef);
+  try {
+    return await originalGetDocFromServer(docRef);
+  } catch (err) {
+    if (isQuotaOrAvailabilityError(err)) {
+      return getDoc(docRef);
+    }
+    throw err;
+  }
 }
 
 function isQuotaOrAvailabilityError(err: unknown): boolean {

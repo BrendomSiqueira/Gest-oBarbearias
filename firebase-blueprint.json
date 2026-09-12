@@ -154,9 +154,21 @@
         "read": { "type": "boolean" }
       },
       "required": ["id", "title", "message", "date"]
+    },
+    "TestConnection": {
+      "title": "TestConnection",
+      "description": "Health check document for verifying Firestore network connectivity.",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string" }
+      }
     }
   },
   "firestore": {
+    "/test/{testId}": {
+      "schema": "TestConnection",
+      "description": "Probe path for verifying backend connection."
+    },
     "/system/config": {
       "schema": "SystemConfig",
       "description": "Global system configuration."

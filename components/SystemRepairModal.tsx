@@ -14,6 +14,8 @@ import {
   ShieldCheck,
   Sparkles,
   ArrowRight,
+  Scissors,
+  DollarSign,
 } from "lucide-react";
 import { Button, Card, Badge, IconButton } from "./UI";
 import {
@@ -62,6 +64,8 @@ export const SystemRepairModal: React.FC<SystemRepairModalProps> = ({
   // Results state
   const [clientTestSteps, setClientTestSteps] = useState<TestStepResult[]>([]);
   const [aptTestSteps, setAptTestSteps] = useState<TestStepResult[]>([]);
+  const [serviceTestSteps, setServiceTestSteps] = useState<TestStepResult[]>([]);
+  const [financialTestSteps, setFinancialTestSteps] = useState<TestStepResult[]>([]);
   const [auditStats, setAuditStats] = useState<{
     orphanedApts: Appointment[];
     duplicateClients: { name: string; count: number }[];
@@ -340,12 +344,271 @@ export const SystemRepairModal: React.FC<SystemRepairModalProps> = ({
     }
   };
 
+  // TEST 3: Test service catalog persistence (create, read, update, delete)
+  const runServiceTest = async () => {
+    const steps: TestStepResult[] = [
+      { title: "Criação de Serviço no Catálogo", status: "pending" },
+      { title: "Validação de Leitura e Duração/Preço", status: "pending" },
+      { title: "Atualização de Valores no Firestore", status: "pending" },
+      { title: "Exclusão Segura do Serviço de Teste", status: "pending" },
+    ];
+    setServiceTestSteps(steps);
+
+    const testServiceId = `test_srv_${Date.now()}`;
+    const testName = `Corte Teste ${new Date().toLocaleTimeString("pt-BR")}`;
+
+    // Step 1: Create service
+    steps[0] = { title: steps[0].title, status: "running" };
+    setServiceTestSteps([...steps]);
+    const t0 = performance.now();
+
+    try {
+      await setDoc(doc(db, "users", userId, "services", testServiceId), {
+        id: testServiceId,
+        name: testName,
+        price: 45,
+        duration: 30,
+      });
+      const t1 = performance.now();
+      steps[0] = {
+        title: steps[0].title,
+        status: "success",
+        latencyMs: Math.round(t1 - t0),
+        details: `Serviço [${testName}] cadastrado (R$ 45,00, 30min).`,
+      };
+      setServiceTestSteps([...steps]);
+    } catch (err: any) {
+      steps[0] = {
+        title: steps[0].title,
+        status: "error",
+        details: `Falha na criação: ${err?.message || String(err)}`,
+      };
+      setServiceTestSteps([...steps]);
+      return;
+    }
+
+    // Step 2: Read service
+    steps[1] = { title: steps[1].title, status: "running" };
+    setServiceTestSteps([...steps]);
+    try {
+      const snap = await getDoc(doc(db, "users", userId, "services", testServiceId));
+      if (snap.exists() && snap.data().price === 45) {
+        steps[1] = {
+          title: steps[1].title,
+          status: "success",
+          details: `Documento verificado: R$ ${snap.data().price}, duração ${snap.data().duration}m.`,
+        };
+      } else {
+        steps[1] = {
+          title: steps[1].title,
+          status: "error",
+          details: "Serviço não retornado com os dados corretos.",
+        };
+      }
+      setServiceTestSteps([...steps]);
+    } catch (err: any) {
+      steps[1] = {
+        title: steps[1].title,
+        status: "error",
+        details: `Erro na leitura: ${err?.message || String(err)}`,
+      };
+      setServiceTestSteps([...steps]);
+      return;
+    }
+
+    // Step 3: Update service
+    steps[2] = { title: steps[2].title, status: "running" };
+    setServiceTestSteps([...steps]);
+    try {
+      await updateDoc(doc(db, "users", userId, "services", testServiceId), {
+        price: 55,
+      });
+      const updatedSnap = await getDoc(doc(db, "users", userId, "services", testServiceId));
+      if (updatedSnap.exists() && updatedSnap.data().price === 55) {
+        steps[2] = {
+          title: steps[2].title,
+          status: "success",
+          details: "Preço atualizado com sucesso para R$ 55,00.",
+        };
+      } else {
+        steps[2] = {
+          title: steps[2].title,
+          status: "error",
+          details: "Atualização não refletiu no documento.",
+        };
+      }
+      setServiceTestSteps([...steps]);
+    } catch (err: any) {
+      steps[2] = {
+        title: steps[2].title,
+        status: "error",
+        details: `Erro no update: ${err?.message || String(err)}`,
+      };
+      setServiceTestSteps([...steps]);
+      return;
+    }
+
+    // Step 4: Delete service
+    steps[3] = { title: steps[3].title, status: "running" };
+    setServiceTestSteps([...steps]);
+    try {
+      await deleteDoc(doc(db, "users", userId, "services", testServiceId));
+      steps[3] = {
+        title: steps[3].title,
+        status: "success",
+        details: "Serviço de teste excluído. Catálogo consistente.",
+      };
+      setServiceTestSteps([...steps]);
+      showToast("Teste de Serviços concluído com sucesso!", "success");
+    } catch (err: any) {
+      steps[3] = {
+        title: steps[3].title,
+        status: "error",
+        details: `Erro na exclusão: ${err?.message || String(err)}`,
+      };
+      setServiceTestSteps([...steps]);
+    }
+  };
+
+  // TEST 4: Test financial adjustment and inventory persistence
+  const runFinancialAndStockTest = async () => {
+    const steps: TestStepResult[] = [
+      { title: "Lançamento de Ajuste de Caixa (Entrada)", status: "pending" },
+      { title: "Verificação da Entrada no Livro Caixa", status: "pending" },
+      { title: "Controle e Atualização de Item de Bar/Estoque", status: "pending" },
+      { title: "Exclusão dos Registros de Teste", status: "pending" },
+    ];
+    setFinancialTestSteps(steps);
+
+    const testAdjId = `test_adj_${Date.now()}`;
+    const testDrinkId = `test_drk_${Date.now()}`;
+    const today = new Date().toISOString().split("T")[0];
+
+    // Step 1: Create adjustment
+    steps[0] = { title: steps[0].title, status: "running" };
+    setFinancialTestSteps([...steps]);
+
+    try {
+      await setDoc(doc(db, "users", userId, "adjustments", testAdjId), {
+        id: testAdjId,
+        amount: 25.5,
+        reason: "Teste Diagnóstico Entrada Caixa",
+        date: today,
+      });
+      steps[0] = {
+        title: steps[0].title,
+        status: "success",
+        details: "Lançamento de R$ 25,50 registrado com sucesso.",
+      };
+      setFinancialTestSteps([...steps]);
+    } catch (err: any) {
+      steps[0] = {
+        title: steps[0].title,
+        status: "error",
+        details: `Erro no lançamento: ${err?.message || String(err)}`,
+      };
+      setFinancialTestSteps([...steps]);
+      return;
+    }
+
+    // Step 2: Read adjustment
+    steps[1] = { title: steps[1].title, status: "running" };
+    setFinancialTestSteps([...steps]);
+    try {
+      const snap = await getDoc(doc(db, "users", userId, "adjustments", testAdjId));
+      if (snap.exists() && snap.data().amount === 25.5) {
+        steps[1] = {
+          title: steps[1].title,
+          status: "success",
+          details: `Entrada conferida: R$ ${snap.data().amount} em ${snap.data().date}.`,
+        };
+      } else {
+        steps[1] = {
+          title: steps[1].title,
+          status: "error",
+          details: "Ajuste não recuperado com integridade.",
+        };
+      }
+      setFinancialTestSteps([...steps]);
+    } catch (err: any) {
+      steps[1] = {
+        title: steps[1].title,
+        status: "error",
+        details: `Erro na leitura: ${err?.message || String(err)}`,
+      };
+      setFinancialTestSteps([...steps]);
+      return;
+    }
+
+    // Step 3: Create and update drink stock
+    steps[2] = { title: steps[2].title, status: "running" };
+    setFinancialTestSteps([...steps]);
+    try {
+      await setDoc(doc(db, "users", userId, "drinks", testDrinkId), {
+        id: testDrinkId,
+        name: "Bebida Teste",
+        price: 8.5,
+        stock: 10,
+      });
+      await updateDoc(doc(db, "users", userId, "drinks", testDrinkId), {
+        stock: 9,
+      });
+      const drinkSnap = await getDoc(doc(db, "users", userId, "drinks", testDrinkId));
+      if (drinkSnap.exists() && drinkSnap.data().stock === 9) {
+        steps[2] = {
+          title: steps[2].title,
+          status: "success",
+          details: "Produto criado (10 un) e baixado para 9 un com sucesso.",
+        };
+      } else {
+        steps[2] = {
+          title: steps[2].title,
+          status: "error",
+          details: "Saldo de estoque não conferiu.",
+        };
+      }
+      setFinancialTestSteps([...steps]);
+    } catch (err: any) {
+      steps[2] = {
+        title: steps[2].title,
+        status: "error",
+        details: `Erro no estoque: ${err?.message || String(err)}`,
+      };
+      setFinancialTestSteps([...steps]);
+      return;
+    }
+
+    // Step 4: Cleanup
+    steps[3] = { title: steps[3].title, status: "running" };
+    setFinancialTestSteps([...steps]);
+    try {
+      await deleteDoc(doc(db, "users", userId, "adjustments", testAdjId));
+      await deleteDoc(doc(db, "users", userId, "drinks", testDrinkId));
+      steps[3] = {
+        title: steps[3].title,
+        status: "success",
+        details: "Registros financeiros e de bar removidos.",
+      };
+      setFinancialTestSteps([...steps]);
+      showToast("Teste Financeiro & Estoque finalizado com sucesso!", "success");
+    } catch (err: any) {
+      steps[3] = {
+        title: steps[3].title,
+        status: "error",
+        details: `Erro na limpeza: ${err?.message || String(err)}`,
+      };
+      setFinancialTestSteps([...steps]);
+    }
+  };
+
   // Run all tests in sequence
   const runAllTests = async () => {
     setIsRunningAll(true);
     try {
       await runClientTest();
       await runAppointmentTest();
+      await runServiceTest();
+      await runFinancialAndStockTest();
       await runAudit();
     } finally {
       setIsRunningAll(false);
@@ -702,6 +965,138 @@ export const SystemRepairModal: React.FC<SystemRepairModalProps> = ({
                 {aptTestSteps.length > 0 && (
                   <div className="space-y-2 pt-2 border-t border-white/5">
                     {aptTestSteps.map((step, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-start justify-between p-2.5 bg-slate-900/80 rounded-xl border border-white/5 text-xs"
+                      >
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          {step.status === "success" && (
+                            <CheckCircle2 size={16} className="text-emerald-400 shrink-0 mt-0.5" />
+                          )}
+                          {step.status === "error" && (
+                            <XCircle size={16} className="text-rose-400 shrink-0 mt-0.5" />
+                          )}
+                          {step.status === "running" && (
+                            <RotateCw size={16} className="text-amber-400 animate-spin shrink-0 mt-0.5" />
+                          )}
+                          {step.status === "pending" && (
+                            <div className="h-4 w-4 rounded-full border border-slate-600 shrink-0 mt-0.5" />
+                          )}
+                          <div>
+                            <p className="font-bold text-slate-200">{step.title}</p>
+                            {step.details && (
+                              <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
+                                {step.details}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        {step.latencyMs !== undefined && (
+                          <span className="text-[10px] text-slate-400 font-mono font-bold shrink-0 ml-2">
+                            {step.latencyMs}ms
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* TEST CARD 3: SERVIÇOS */}
+              <div className="bg-slate-950/40 border border-white/5 rounded-2xl p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-xl bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center">
+                      <Scissors size={18} />
+                    </div>
+                    <div>
+                      <h5 className="text-xs font-black text-white uppercase tracking-wider">
+                        3. Teste de Função: Catálogo de Serviços
+                      </h5>
+                      <p className="text-[11px] text-slate-400">
+                        Valida criação, atualização de valores, duração e deleção no Firestore.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="warning"
+                    size="xs"
+                    onClick={runServiceTest}
+                    icon={<RotateCw size={12} />}
+                  >
+                    Testar Serviços
+                  </Button>
+                </div>
+
+                {serviceTestSteps.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-white/5">
+                    {serviceTestSteps.map((step, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-start justify-between p-2.5 bg-slate-900/80 rounded-xl border border-white/5 text-xs"
+                      >
+                        <div className="flex items-start gap-2.5 min-w-0">
+                          {step.status === "success" && (
+                            <CheckCircle2 size={16} className="text-emerald-400 shrink-0 mt-0.5" />
+                          )}
+                          {step.status === "error" && (
+                            <XCircle size={16} className="text-rose-400 shrink-0 mt-0.5" />
+                          )}
+                          {step.status === "running" && (
+                            <RotateCw size={16} className="text-amber-400 animate-spin shrink-0 mt-0.5" />
+                          )}
+                          {step.status === "pending" && (
+                            <div className="h-4 w-4 rounded-full border border-slate-600 shrink-0 mt-0.5" />
+                          )}
+                          <div>
+                            <p className="font-bold text-slate-200">{step.title}</p>
+                            {step.details && (
+                              <p className="text-[11px] text-slate-400 mt-0.5 font-mono">
+                                {step.details}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        {step.latencyMs !== undefined && (
+                          <span className="text-[10px] text-slate-400 font-mono font-bold shrink-0 ml-2">
+                            {step.latencyMs}ms
+                          </span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* TEST CARD 4: FINANCEIRO & ESTOQUE */}
+              <div className="bg-slate-950/40 border border-white/5 rounded-2xl p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="h-9 w-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center">
+                      <DollarSign size={18} />
+                    </div>
+                    <div>
+                      <h5 className="text-xs font-black text-white uppercase tracking-wider">
+                        4. Teste de Função: Financeiro & Estoque
+                      </h5>
+                      <p className="text-[11px] text-slate-400">
+                        Valida lançamentos de caixa (entradas/saídas) e atualização de estoque de bar.
+                      </p>
+                    </div>
+                  </div>
+                  <Button
+                    variant="success"
+                    size="xs"
+                    onClick={runFinancialAndStockTest}
+                    icon={<RotateCw size={12} />}
+                  >
+                    Testar Financeiro
+                  </Button>
+                </div>
+
+                {financialTestSteps.length > 0 && (
+                  <div className="space-y-2 pt-2 border-t border-white/5">
+                    {financialTestSteps.map((step, idx) => (
                       <div
                         key={idx}
                         className="flex items-start justify-between p-2.5 bg-slate-900/80 rounded-xl border border-white/5 text-xs"

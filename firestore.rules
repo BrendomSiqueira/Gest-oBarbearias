@@ -190,6 +190,11 @@ service cloud.firestore {
       allow write: if isHardcodedAdmin() && isValidSystemConfig(incoming());
     }
 
+    // Health check ping rule for connectivity validation
+    match /test/{testId} {
+      allow get: if true;
+    }
+
     // Root Users & Profiles
     match /users/{userId} {
       allow get: if isValidId(userId);

@@ -1027,19 +1027,30 @@ const App: React.FC = () => {
 
   // Test connection to Firestore
   useEffect(() => {
+    let isMounted = true;
     async function testConnection() {
       try {
+        // Allow a brief moment for initial socket handshake
+        await new Promise((resolve) => setTimeout(resolve, 800));
+        if (!isMounted) return;
         await getDocFromServer(doc(db, "test", "connection"));
-      } catch (error) {
+      } catch (error: any) {
+        if (!isMounted) return;
+        const msg = error instanceof Error ? error.message : String(error);
         if (
-          error instanceof Error &&
-          error.message.includes("the client is offline")
+          error?.code === "unavailable" ||
+          msg.includes("the client is offline") ||
+          msg.includes("unavailable") ||
+          msg.includes("Could not reach Cloud Firestore")
         ) {
-          console.error("Please check your Firebase configuration.");
+          console.warn("Firestore está operando em cache local / modo offline até restabelecer a conexão.");
         }
       }
     }
     testConnection();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // System Config Listener
@@ -3680,6 +3691,8 @@ const App: React.FC = () => {
           await setDoc(doc(db, "users", userId, "appointments", aptId), {
             id: aptId,
             clientId,
+            clientName: request.clientName,
+            clientPhone: request.clientPhone || "",
             serviceId: request.serviceId,
             date: request.date,
             time: request.time,
