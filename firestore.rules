@@ -88,13 +88,13 @@ service cloud.firestore {
     }
 
     function isValidClient(data) {
-      return data.keys().hasAll(['id', 'name', 'phone', 'totalSpent']) &&
+      return data.keys().hasAll(['id', 'name', 'totalSpent']) &&
              isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
-             data.phone is string && data.phone.size() > 0 && data.phone.size() <= 30 &&
+             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
              data.totalSpent is number && data.totalSpent >= 0 &&
              (!('lastVisit' in data) || isValidDateString(data.lastVisit)) &&
-             (!('photo' in data) || (data.photo is string && data.photo.size() <= 1000));
+             (!('photo' in data) || data.photo == null || (data.photo is string && data.photo.size() <= 1000000));
     }
 
     function isValidService(data) {
@@ -119,6 +119,7 @@ service cloud.firestore {
              (!('clientName' in data) || (data.clientName is string && data.clientName.size() <= 100)) &&
              (!('clientPhone' in data) || (data.clientPhone is string && data.clientPhone.size() <= 30)) &&
              (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
+             (!('createdAt' in data) || isValidDateString(data.createdAt)) &&
              data.status in ['confirmed', 'pending', 'rejected'];
     }
 

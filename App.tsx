@@ -72,6 +72,8 @@ import {
   AlertCircle,
   Lock,
   Unlock,
+  Wrench,
+  UserPlus,
 } from "lucide-react";
 import {
   AreaChart,
@@ -86,6 +88,7 @@ import {
 } from "recharts";
 
 import { Button, Input, Card, Badge, IconButton, StatCard } from "./components/UI";
+import { SystemRepairModal } from "./components/SystemRepairModal";
 import { StorageService, hashPassword } from "./services/storage";
 import { GeminiService } from "./services/gemini";
 import {
@@ -961,6 +964,15 @@ const App: React.FC = () => {
   const [clientPhotoBase64, setClientPhotoBase64] = useState<string | null>(
     null,
   );
+
+  // Estados para Reparo do Sistema e Criação Rápida de Clientes
+  const [showRepairModal, setShowRepairModal] = useState(false);
+  const [showQuickNewClientModal, setShowQuickNewClientModal] = useState(false);
+  const [quickClientName, setQuickClientName] = useState("");
+  const [quickClientPhone, setQuickClientPhone] = useState("");
+  const [quickClientPhoto, setQuickClientPhoto] = useState<string | null>(null);
+  const [isSavingQuickClient, setIsSavingQuickClient] = useState(false);
+  const [clientSearchFilter, setClientSearchFilter] = useState("");
 
   // Estados para edição e duplicidade
   const [pendingClient, setPendingClient] = useState<{
@@ -3538,22 +3550,26 @@ const App: React.FC = () => {
     name: string,
     phone: string,
     photo: string | null,
-  ) => {
-    if (!auth.currentUser) return;
+  ): Promise<string | null> => {
+    if (!auth.currentUser) return null;
     const userId = effectiveUserId;
     const clientId = Date.now().toString();
 
     try {
-      await setDoc(doc(db, "users", userId, "clients", clientId), {
+      const clientData: any = {
         id: clientId,
-        name,
-        phone,
+        name: name.trim(),
+        phone: phone ? phone.trim() : "",
         totalSpent: 0,
-        photo: photo || null,
-      });
+        lastVisit: new Date().toISOString(),
+      };
+      if (photo) {
+        clientData.photo = photo;
+      }
+      await setDoc(doc(db, "users", userId, "clients", clientId), clientData);
       setPendingClient(null);
       setClientPhotoBase64(null);
-      showToast("Novo membro VIP!");
+      showToast("Novo membro VIP cadastrado!", "success");
       return clientId;
     } catch (err) {
       handleFirestoreError(
@@ -3561,6 +3577,41 @@ const App: React.FC = () => {
         OperationType.WRITE,
         `users/${userId}/clients/${clientId}`,
       );
+      return null;
+    }
+  };
+
+  const handleQuickClientSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickClientName.trim()) {
+      showToast("Informe o nome do cliente!", "error");
+      return;
+    }
+    setIsSavingQuickClient(true);
+    try {
+      const newId = await saveNewClient(
+        quickClientName.trim(),
+        quickClientPhone.trim(),
+        quickClientPhoto,
+      );
+      if (newId) {
+        const newClientObj: Client = {
+          id: newId,
+          name: quickClientName.trim(),
+          phone: quickClientPhone.trim(),
+          totalSpent: 0,
+          photo: quickClientPhoto || undefined,
+        };
+        setSelectedAptClient(newClientObj);
+        setAptClientSearch(quickClientName.trim());
+        setShowQuickNewClientModal(false);
+        setQuickClientName("");
+        setQuickClientPhone("");
+        setQuickClientPhoto(null);
+        showToast(`Cliente "${newClientObj.name}" selecionado para agendamento!`, "success");
+      }
+    } finally {
+      setIsSavingQuickClient(false);
     }
   };
 
@@ -3775,7 +3826,7 @@ const App: React.FC = () => {
 
   if (!isAuthReady)
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="min-h-screen bg-transparent flex items-center justify-center">
         <div className="animate-pulse flex flex-col items-center gap-4">
           <LogoElite className="h-24 w-24" />
           <p className="text-elite-cyan-400 font-black tracking-widest text-[10px] uppercase">
@@ -3789,7 +3840,7 @@ const App: React.FC = () => {
 
   if (!isAuthenticated)
     return (
-      <div className="min-h-screen flex items-center justify-center p-4 bg-slate-950 relative overflow-hidden">
+      <div className="min-h-screen flex items-center justify-center p-4 bg-transparent relative overflow-hidden">
         {/* Ambient luxury light orbs for a premium deep slate aesthetic with brand red & warm gold glows */}
         <div className="absolute top-[10%] left-[10%] w-[350px] h-[350px] bg-elite-red-500/10 rounded-full blur-[120px] pointer-events-none animate-pulse duration-[8000ms]" />
         <div className="absolute bottom-[10%] right-[10%] w-[350px] h-[350px] bg-[#E1B15F]/5 rounded-full blur-[120px] pointer-events-none" />
@@ -3959,7 +4010,7 @@ const App: React.FC = () => {
     );
 
   return (
-    <div className="min-h-screen text-slate-100 flex overflow-hidden bg-slate-950">
+    <div className="min-h-screen text-slate-100 flex overflow-hidden bg-transparent">
       {/* Edição de Cliente Modal */}
       {editingClient && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
@@ -4100,6 +4151,140 @@ const App: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal de Cadastro Rápido de Novo Cliente */}
+      {showQuickNewClientModal && (
+        <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-md bg-slate-900 border border-white/10 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-xl bg-purple-500/15 border border-purple-500/30 text-purple-400 flex items-center justify-center">
+                  <UserPlus size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white uppercase tracking-tight">
+                    Novo Cliente VIP
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Cadastrar e vincular ao agendamento
+                  </p>
+                </div>
+              </div>
+              <IconButton
+                icon={<X size={16} />}
+                variant="ghost"
+                onClick={() => setShowQuickNewClientModal(false)}
+                title="Fechar"
+              />
+            </div>
+
+            <form onSubmit={handleQuickClientSave} className="space-y-4">
+              <div>
+                <label className="text-[10px] font-black text-slate-300 uppercase">
+                  Nome Completo
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: João Vitor"
+                  required
+                  value={quickClientName}
+                  onChange={(e) => setQuickClientName(e.target.value)}
+                  className="w-full mt-1 px-3.5 py-2.5 bg-slate-950/80 border border-white/10 rounded-xl text-white text-xs font-bold outline-none focus:border-elite-cyan-400"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black text-slate-300 uppercase">
+                  WhatsApp / Telefone (Opcional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="11999999999"
+                  value={quickClientPhone}
+                  onChange={(e) => setQuickClientPhone(e.target.value)}
+                  className="w-full mt-1 px-3.5 py-2.5 bg-slate-950/80 border border-white/10 rounded-xl text-white text-xs font-bold outline-none focus:border-elite-cyan-400"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-black text-slate-300 uppercase flex items-center gap-1 mb-1">
+                  <Camera size={12} className="text-elite-cyan-400" /> Foto do Cliente (Opcional)
+                </label>
+                <div className="flex items-center gap-3">
+                  <label className="flex-1 bg-slate-950/70 border border-dashed border-white/15 rounded-xl p-2.5 flex items-center justify-center gap-2 cursor-pointer hover:border-purple-400 hover:bg-slate-900/60 transition-all">
+                    <Upload size={14} className="text-slate-400" />
+                    <span className="text-[10px] font-bold uppercase text-slate-300">
+                      {quickClientPhoto ? "Trocar Foto" : "Carregar Foto"}
+                    </span>
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            setQuickClientPhoto(reader.result as string);
+                          };
+                          reader.readAsDataURL(file);
+                        }
+                      }}
+                    />
+                  </label>
+                  {quickClientPhoto && (
+                    <div className="relative h-10 w-10 rounded-xl border border-purple-400 overflow-hidden shrink-0">
+                      <img src={quickClientPhoto} className="h-full w-full object-cover" />
+                      <button
+                        type="button"
+                        onClick={() => setQuickClientPhoto(null)}
+                        className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity text-white"
+                        title="Remover foto"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="pt-2 flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-1/3"
+                  onClick={() => setShowQuickNewClientModal(false)}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  type="submit"
+                  variant="lilac"
+                  size="sm"
+                  className="w-2/3"
+                  isLoading={isSavingQuickClient}
+                  icon={<UserPlus size={14} />}
+                >
+                  Salvar Cliente
+                </Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Central de Reparo e Testes do Sistema */}
+      <SystemRepairModal
+        isOpen={showRepairModal}
+        onClose={() => setShowRepairModal(false)}
+        userId={effectiveUserId}
+        clients={clients}
+        appointments={appointments}
+        services={services}
+        showToast={showToast}
+      />
 
       {/* Modal para Informar o Motivo da Recusa */}
       {showRejectModal && rejectingRequestId && (() => {
@@ -4441,7 +4626,7 @@ const App: React.FC = () => {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 min-h-screen flex flex-col bg-slate-950 overflow-y-auto">
+      <main className="flex-1 min-w-0 min-h-screen flex flex-col bg-slate-950/40 backdrop-blur-[2px] overflow-y-auto">
         <header className="sticky top-0 z-30 bg-slate-950/85 backdrop-blur-xl border-b border-white/5 px-3.5 sm:px-6 lg:px-8 py-3 sm:py-3.5 flex items-center justify-between">
           <div className="flex items-center gap-2.5 sm:gap-4 min-w-0">
             <button
@@ -4490,6 +4675,14 @@ const App: React.FC = () => {
               {notifications.some((n) => !n.read) && (
                 <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-elite-red-500 rounded-full border-2 border-slate-950"></span>
               )}
+            </button>
+            <button
+              onClick={() => setShowRepairModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 transition-all cursor-pointer text-[10px] font-black uppercase tracking-wider"
+              title="Central de Reparo & Testes do Sistema"
+            >
+              <Wrench size={14} className="text-emerald-400" />
+              <span className="hidden sm:inline">Reparo</span>
             </button>
             <button
               onClick={() => setIsPrivacyMode(!isPrivacyMode)}
@@ -4589,8 +4782,33 @@ const App: React.FC = () => {
                       if (!serviceId) {
                         return showToast("Selecione um corte ou serviço!", "error");
                       }
-                      if (!selectedAptClient) {
-                        return showToast("Selecione um cliente!", "error");
+
+                      let targetClient = selectedAptClient;
+                      if (!targetClient) {
+                        const typedName = aptClientSearch.trim();
+                        if (!typedName) {
+                          return showToast("Selecione ou digite o nome do cliente!", "error");
+                        }
+                        const existing = clients.find(
+                          (c) => c.name.toLowerCase().trim() === typedName.toLowerCase()
+                        );
+                        if (existing) {
+                          targetClient = existing;
+                          setSelectedAptClient(existing);
+                        } else {
+                          const newClientId = await saveNewClient(typedName, "", null);
+                          if (newClientId) {
+                            targetClient = {
+                              id: newClientId,
+                              name: typedName,
+                              phone: "",
+                              totalSpent: 0,
+                            };
+                            setSelectedAptClient(targetClient);
+                          } else {
+                            return showToast("Não foi possível registrar o cliente. Tente novamente.", "error");
+                          }
+                        }
                       }
 
                       const service = services.find((s) => s.id === serviceId) || selectedAptService;
@@ -4612,7 +4830,9 @@ const App: React.FC = () => {
                           doc(db, "users", userId, "appointments", id),
                           {
                             id,
-                            clientId: selectedAptClient.id,
+                            clientId: targetClient.id,
+                            clientName: targetClient.name,
+                            clientPhone: targetClient.phone || "",
                             serviceId: serviceId,
                             date,
                             time,
@@ -4786,108 +5006,183 @@ const App: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* CLIENTE VIP COM BUSCA EM TEMPO REAL */}
+                    {/* CLIENTE VIP COM BUSCA EM TEMPO REAL E CADASTRO RÁPIDO */}
                     <div className="space-y-1 relative">
-                      <label className="text-[10px] font-black text-elite-cyan-400 uppercase tracking-widest ml-1">
-                        CLIENTE
-                      </label>
-                      <div className="flex items-center gap-2">
-                        {selectedAptClient && (
-                          <div className="h-10 w-10 min-w-[40px] rounded-xl border-2 border-elite-red-500 overflow-hidden shadow-lg animate-in zoom-in duration-200">
-                            {selectedAptClient.photo ? (
-                              <img
-                                src={selectedAptClient.photo}
-                                className="h-full w-full object-cover"
-                              />
-                            ) : (
-                              <div className="h-full w-full bg-slate-900 flex items-center justify-center font-black text-elite-red-500 uppercase text-xs">
-                                {selectedAptClient.name.charAt(0)}
-                              </div>
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-black text-elite-cyan-400 uppercase tracking-widest ml-1 flex items-center gap-1.5">
+                          <UserIcon size={12} /> CLIENTE VIP
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQuickClientName(aptClientSearch.trim());
+                            setQuickClientPhone("");
+                            setShowQuickNewClientModal(true);
+                          }}
+                          className="text-[9px] font-black text-elite-cyan-400 hover:text-white uppercase flex items-center gap-1 transition-colors cursor-pointer bg-slate-950/80 hover:bg-elite-cyan-500/20 px-2 py-0.5 rounded-lg border border-elite-cyan-500/30"
+                          title="Cadastrar novo cliente rapidamente"
+                        >
+                          <UserPlus size={11} /> + Novo Cliente
+                        </button>
+                      </div>
+
+                      {/* Selected Client Pill */}
+                      {selectedAptClient && (
+                        <div className="flex items-center justify-between p-2.5 bg-elite-cyan-500/10 border border-elite-cyan-500/30 rounded-xl mb-1.5 animate-in fade-in duration-200">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="h-8 w-8 rounded-lg bg-slate-950 border border-elite-cyan-400/40 flex items-center justify-center overflow-hidden shrink-0">
+                              {selectedAptClient.photo ? (
+                                <img
+                                  src={selectedAptClient.photo}
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : (
+                                <span className="text-[10px] font-black text-elite-cyan-400 uppercase">
+                                  {selectedAptClient.name.charAt(0)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="truncate">
+                              <span className="text-xs font-black text-white uppercase block truncate">
+                                {selectedAptClient.name}
+                              </span>
+                              {selectedAptClient.phone && (
+                                <span className="text-[9px] text-slate-400 font-mono">
+                                  {selectedAptClient.phone}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedAptClient(null);
+                              setAptClientSearch("");
+                            }}
+                            className="text-[10px] font-bold text-slate-400 hover:text-rose-400 uppercase ml-2 px-2 py-1 rounded bg-slate-900/60 border border-white/5 cursor-pointer"
+                          >
+                            Trocar
+                          </button>
+                        </div>
+                      )}
+
+                      {!selectedAptClient && (
+                        <div className="flex items-center gap-2">
+                          <div className="relative w-full">
+                            <input
+                              type="text"
+                              placeholder="Digite o nome do cliente..."
+                              className="w-full bg-slate-950/60 border border-white/10 rounded-xl px-4 py-3 text-white text-xs font-bold focus:border-elite-red-500 outline-none pr-12"
+                              value={aptClientSearch}
+                              onChange={(e) => {
+                                setAptClientSearch(e.target.value);
+                                setShowAptResults(true);
+                              }}
+                              onFocus={() => setShowAptResults(true)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Escape") {
+                                  setShowAptResults(false);
+                                }
+                              }}
+                            />
+                            {aptClientSearch && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setAptClientSearch("");
+                                  setSelectedAptClient(null);
+                                  setShowAptResults(false);
+                                }}
+                                className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white cursor-pointer"
+                                title="Limpar busca de cliente"
+                              >
+                                <X size={14} />
+                              </button>
                             )}
                           </div>
-                        )}
-                        <div className="relative w-full">
-                          <input
-                            type="text"
-                            placeholder="Buscar cliente por nome..."
-                            className="w-full bg-slate-950/60 border border-white/10 rounded-xl px-4 py-3 text-white text-xs font-bold focus:border-elite-red-500 outline-none pr-12"
-                            value={aptClientSearch}
-                            onChange={(e) => {
-                              setAptClientSearch(e.target.value);
-                              setShowAptResults(true);
-                              if (selectedAptClient) setSelectedAptClient(null);
-                            }}
-                            onFocus={() => setShowAptResults(true)}
-                            onKeyDown={(e) => {
-                              if (e.key === "Escape") {
-                                setShowAptResults(false);
-                              }
-                            }}
-                          />
-                          {(aptClientSearch || selectedAptClient) && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setAptClientSearch("");
-                                setSelectedAptClient(null);
-                                setShowAptResults(false);
-                              }}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white cursor-pointer"
-                              title="Limpar busca de cliente"
-                            >
-                              <X size={14} />
-                            </button>
-                          )}
                         </div>
-                      </div>
-                      {showAptResults && aptClientSearch.trim() && (
+                      )}
+
+                      {showAptResults && aptClientSearch.trim() && !selectedAptClient && (
                         <>
                           <div
                             className="fixed inset-0 z-40"
                             onClick={() => setShowAptResults(false)}
                           />
-                          <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden max-h-[160px] overflow-y-auto p-1 space-y-1">
-                            {clients
-                              .filter((c) =>
+                          <div className="absolute z-50 left-0 right-0 mt-1 bg-slate-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden max-h-[220px] overflow-y-auto p-1 space-y-1">
+                            {(() => {
+                              const filtered = clients.filter((c) =>
                                 c.name
                                   .toLowerCase()
                                   .includes(aptClientSearch.toLowerCase()),
-                              )
-                              .map((c) => (
-                                <button
-                                  key={c.id}
-                                  type="button"
-                                  className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer"
-                                  onClick={() => {
-                                    setSelectedAptClient(c);
-                                    setAptClientSearch(c.name);
-                                    setShowAptResults(false);
-                                  }}
-                                >
-                                  <div className="h-8 w-8 rounded-lg bg-slate-950 border border-elite-red-500/20 flex items-center justify-center overflow-hidden shrink-0">
-                                    {c.photo ? (
-                                      <img
-                                        src={c.photo}
-                                        className="h-full w-full object-cover"
-                                      />
-                                    ) : (
-                                      <span className="text-[9px] font-black text-elite-red-500 uppercase">
-                                        {c.name.charAt(0)}
-                                      </span>
-                                    )}
+                              );
+
+                              return (
+                                <>
+                                  {filtered.map((c) => (
+                                    <button
+                                      key={c.id}
+                                      type="button"
+                                      className="w-full text-left px-3 py-2 hover:bg-white/10 rounded-lg flex items-center gap-2.5 transition-colors cursor-pointer"
+                                      onClick={() => {
+                                        setSelectedAptClient(c);
+                                        setAptClientSearch(c.name);
+                                        setShowAptResults(false);
+                                      }}
+                                    >
+                                      <div className="h-8 w-8 rounded-lg bg-slate-950 border border-elite-red-500/20 flex items-center justify-center overflow-hidden shrink-0">
+                                        {c.photo ? (
+                                          <img
+                                            src={c.photo}
+                                            className="h-full w-full object-cover"
+                                          />
+                                        ) : (
+                                          <span className="text-[9px] font-black text-elite-red-500 uppercase">
+                                            {c.name.charAt(0)}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="truncate">
+                                        <span className="text-[10px] font-black text-white uppercase block truncate">
+                                          {c.name}
+                                        </span>
+                                        {c.phone && (
+                                          <span className="text-[8px] text-slate-400 font-mono">
+                                            {c.phone}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </button>
+                                  ))}
+
+                                  {/* Option to create new client with the typed name */}
+                                  <div className="pt-1 border-t border-white/5">
+                                    <button
+                                      type="button"
+                                      onClick={async () => {
+                                        const newName = aptClientSearch.trim();
+                                        const newId = await saveNewClient(newName, "", null);
+                                        if (newId) {
+                                          const newClientObj: Client = {
+                                            id: newId,
+                                            name: newName,
+                                            phone: "",
+                                            totalSpent: 0,
+                                          };
+                                          setSelectedAptClient(newClientObj);
+                                          setAptClientSearch(newName);
+                                          setShowAptResults(false);
+                                        }
+                                      }}
+                                      className="w-full py-2 px-3 bg-elite-cyan-500/15 hover:bg-elite-cyan-500/25 border border-elite-cyan-500/30 text-elite-cyan-400 hover:text-white rounded-lg text-xs font-black uppercase flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+                                    >
+                                      <UserPlus size={13} />
+                                      + Cadastrar e Usar "{aptClientSearch.trim()}"
+                                    </button>
                                   </div>
-                                  <div className="truncate">
-                                    <span className="text-[10px] font-black text-white uppercase block truncate">
-                                      {c.name}
-                                    </span>
-                                    {c.phone && (
-                                      <span className="text-[8px] text-slate-400 font-mono">
-                                        {c.phone}
-                                      </span>
-                                    )}
-                                  </div>
-                                </button>
-                              ))}
+                                </>
+                              );
+                            })()}
                           </div>
                         </>
                       )}
@@ -5521,10 +5816,9 @@ const App: React.FC = () => {
                       required
                     />
                     <Input
-                      label="WHATSAPP (DDD)"
+                      label="WHATSAPP (DDD - OPCIONAL)"
                       name="p"
-                      placeholder="11999999999"
-                      required
+                      placeholder="11999999999 (Opcional)"
                     />
                     <div className="space-y-1.5">
                       <label className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5 ml-0.5">
@@ -5563,8 +5857,50 @@ const App: React.FC = () => {
                 </div>
               </Card>
 
+              {/* Barra de Filtro de Clientes e Botão de Reparo */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-950/40 p-4 rounded-2xl border border-white/5">
+                <div className="relative flex-1">
+                  <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Filtrar clientes por nome ou telefone..."
+                    value={clientSearchFilter}
+                    onChange={(e) => setClientSearchFilter(e.target.value)}
+                    className="w-full pl-10 pr-10 py-2.5 bg-slate-900/90 border border-white/10 rounded-xl text-white text-xs font-bold focus:border-elite-cyan-400 outline-none"
+                  />
+                  {clientSearchFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setClientSearchFilter("")}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white p-1"
+                    >
+                      <X size={13} />
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-[10px] font-black uppercase text-slate-400 px-2">
+                    {clients.filter(c => !clientSearchFilter.trim() || c.name.toLowerCase().includes(clientSearchFilter.toLowerCase()) || (c.phone && c.phone.includes(clientSearchFilter))).length} de {clients.length} Clientes
+                  </span>
+                  <Button
+                    variant="cyan"
+                    size="sm"
+                    onClick={() => setShowRepairModal(true)}
+                    icon={<Wrench size={14} />}
+                  >
+                    Reparo & Testes
+                  </Button>
+                </div>
+              </div>
+
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                {clients.map((c) => (
+                {clients
+                  .filter((c) => 
+                    !clientSearchFilter.trim() ||
+                    c.name.toLowerCase().includes(clientSearchFilter.toLowerCase()) ||
+                    (c.phone && c.phone.includes(clientSearchFilter))
+                  )
+                  .map((c) => (
                   <div
                     key={c.id}
                     className="bg-slate-900/70 border border-white/[0.08] p-4 sm:p-5 rounded-2xl sm:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group hover:bg-slate-900 hover:border-white/15 transition-all shadow-xl"
@@ -6861,18 +7197,30 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              <div className="bg-slate-900/40 border border-white/5 p-8 rounded-[40px] shadow-xl">
-                <h3 className="text-xl font-black text-white italic uppercase mb-6 flex items-center gap-3">
-                  <Database size={24} className="text-elite-cyan-400" />
-                  Manutenção & Logs
-                </h3>
-                <div className="bg-slate-950/40 p-6 rounded-3xl border border-white/5 border-dashed text-center">
-                  <p className="text-xs text-slate-500 font-bold uppercase tracking-widest leading-loose">
-                    Painel Administrativo Restrito
-                    <br />
-                    <span className="text-elite-red-500">
-                      Acesso Total Ativado
-                    </span>
+              <div className="bg-slate-900/40 border border-white/5 p-8 rounded-[40px] shadow-xl space-y-6">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xl font-black text-white italic uppercase flex items-center gap-3">
+                    <Wrench size={24} className="text-emerald-400" />
+                    Central de Reparo & Diagnóstico do Sistema
+                  </h3>
+                  <Button
+                    variant="cyan"
+                    size="sm"
+                    onClick={() => setShowRepairModal(true)}
+                    icon={<Wrench size={14} />}
+                  >
+                    Abrir Central de Reparo
+                  </Button>
+                </div>
+                <div className="bg-slate-950/60 p-6 rounded-3xl border border-white/5 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <ShieldCheck size={18} className="text-emerald-400" />
+                    <p className="text-xs font-black text-white uppercase tracking-wider">
+                      Bateria de Testes Funcionais & Reparo de Banco
+                    </p>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Execute testes automatizados para verificar a gravação de nomes em agendamentos, o cadastro de novos clientes VIP no Firestore e a auditoria de integridade do banco de dados para reconciliação de horários.
                   </p>
                 </div>
               </div>
@@ -7849,7 +8197,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
   if (bookingSuccess) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-3 sm:p-4 text-slate-100">
+      <div className="min-h-screen bg-transparent flex items-center justify-center p-3 sm:p-4 text-slate-100">
         <div className="max-w-sm w-full bg-slate-900/90 border border-white/10 rounded-3xl p-6 text-center space-y-5 shadow-2xl animate-in zoom-in-95 duration-300">
           <div className="h-16 w-16 bg-emerald-500/10 border border-emerald-500/20 rounded-full flex items-center justify-center mx-auto text-emerald-400">
             <CheckCircle2 size={36} className="animate-bounce" />
@@ -7901,7 +8249,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
   if (bookingError) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-3 sm:p-4 text-slate-100">
+      <div className="min-h-screen bg-transparent flex items-center justify-center p-3 sm:p-4 text-slate-100">
         <div className="max-w-sm w-full bg-slate-900/90 border border-red-500/30 rounded-3xl p-6 text-center space-y-5 shadow-2xl">
           <div className="h-16 w-16 bg-red-500/10 border border-red-500/20 rounded-full flex items-center justify-center mx-auto text-red-500">
             <AlertTriangle size={36} />
@@ -7922,7 +8270,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
   if (!bookingBarber) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-transparent flex items-center justify-center p-4">
         <div className="animate-pulse flex flex-col items-center gap-3">
           <LogoElite className="h-16 w-16" />
           <p className="text-elite-cyan-400 font-black tracking-widest text-[9px] uppercase">
@@ -7936,7 +8284,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
   const availableSlots = getAvailableSlots(bookingDate, selectedService);
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans p-2.5 sm:p-4 pb-20">
+    <div className="min-h-screen bg-transparent text-slate-100 font-sans p-2.5 sm:p-4 pb-20">
       {/* Toast Alert */}
       {toast && (
         <div

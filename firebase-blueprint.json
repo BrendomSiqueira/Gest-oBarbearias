@@ -28,7 +28,7 @@
         "lastVisit": { "type": "string", "format": "date-time" },
         "photo": { "type": "string" }
       },
-      "required": ["id", "name", "phone"]
+      "required": ["id", "name", "totalSpent"]
     },
     "Service": {
       "title": "Service",

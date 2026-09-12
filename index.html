@@ -54,7 +54,7 @@
     <style>
       body {
         font-family: 'Inter', sans-serif;
-        background: radial-gradient(circle at top left, #020617, #0b1329, #020617);
+        background: radial-gradient(ellipse at bottom, #1b2735 0%, #090a0f 100%);
         color: #f8fafc;
         min-height: 100vh;
         min-height: -webkit-fill-available;
@@ -112,7 +112,13 @@
 <link rel="stylesheet" href="/index.css">
 </head>
   <body>
-    <div id="root"></div>
+    <div class="stars-container" aria-hidden="true">
+      <div id="stars"></div>
+      <div id="stars2"></div>
+      <div id="stars3"></div>
+      <div></div>
+    </div>
+    <div id="root" style="position: relative; z-index: 1;"></div>
   <script type="module" src="/index.tsx"></script>
 </body>
 </html>
