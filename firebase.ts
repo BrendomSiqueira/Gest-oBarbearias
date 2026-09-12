@@ -69,14 +69,22 @@ const safeStorage = {
   }
 };
 
-// Initialize simulated session based on previous activeUID
-// Check if Firestore quota was recently exceeded to maintain seamless offline contingency
-const quotaExhaustedTime = Number(safeStorage.getItem('firestore_quota_exhausted_time') || '0');
-const isRecentQuotaExhaustion = Date.now() - quotaExhaustedTime < 6 * 60 * 60 * 1000;
+export const isContingencyActive = (): boolean => {
+  return (
+    safeStorage.getItem('force_offline') === 'true' ||
+    safeStorage.getItem('firestore_quota_exhausted') === 'true'
+  );
+};
 
-if (safeStorage.getItem('firestore_quota_exhausted') === 'true' && isRecentQuotaExhaustion) {
+// Initialize simulated session based on previous activeUID
+// Check if Firestore quota was exceeded or needs offline contingency
+const quotaExhaustedSetting = safeStorage.getItem('firestore_quota_exhausted');
+if (quotaExhaustedSetting !== 'false') {
   safeStorage.setItem('force_offline', 'true');
-  console.warn('[Firebase] Mantendo Modo de Contingência Local Ativo (Cota gratuita diária do Firestore atingida). Dados salvos localmente.');
+  safeStorage.setItem('firestore_quota_exhausted', 'true');
+  if (!safeStorage.getItem('firestore_quota_exhausted_time')) {
+    safeStorage.setItem('firestore_quota_exhausted_time', Date.now().toString());
+  }
   try {
     disableNetwork(firestoreDb).catch(() => {});
   } catch {}
@@ -334,7 +342,7 @@ export function doc(database: any, ...pathSegments: string[]) {
   const isOffline = 
     fullPath.includes('offline_demo') || 
     pathSegments[1] === 'offline_demo' || 
-    safeStorage.getItem('force_offline') === 'true';
+    isContingencyActive();
   const ref = originalDoc(database, ...pathSegments as [string, ...string[]]);
   
   (ref as any).isOffline = isOffline;
@@ -347,7 +355,7 @@ export function collection(database: any, ...pathSegments: string[]) {
   const isOffline = 
     fullPath.includes('offline_demo') || 
     pathSegments[1] === 'offline_demo' || 
-    safeStorage.getItem('force_offline') === 'true';
+    isContingencyActive();
   const ref = originalCollection(database, ...pathSegments as [string, ...string[]]);
   
   (ref as any).isOffline = isOffline;
@@ -356,7 +364,7 @@ export function collection(database: any, ...pathSegments: string[]) {
 }
 
 export function query(queryRef: any, ...queryConstraints: any[]) {
-  const isOffline = queryRef.isOffline;
+  const isOffline = queryRef.isOffline || isContingencyActive();
   const ref = originalQuery(queryRef, ...queryConstraints);
   (ref as any).isOffline = isOffline;
   (ref as any).customPath = queryRef.customPath;
@@ -414,9 +422,9 @@ function deleteFromLocalSimDB(path: string) {
 }
 
 export async function getDoc(docRef: any) {
-  if (docRef.isOffline) {
+  if (docRef.isOffline || isContingencyActive()) {
     const path = docRef.customPath;
-    const segments = path.split('/');
+    const segments = path ? path.split('/') : [];
     
     if (segments.length === 2) {
       const uId = segments[1];
@@ -531,7 +539,7 @@ export async function getDoc(docRef: any) {
 }
 
 export async function getDocFromServer(docRef: any) {
-  if (docRef.isOffline) {
+  if (docRef.isOffline || isContingencyActive()) {
     return getDoc(docRef);
   }
   try {
@@ -571,7 +579,6 @@ export function activateContingencyMode(reason?: string) {
   safeStorage.setItem('force_offline', 'true');
   safeStorage.setItem('firestore_quota_exhausted', 'true');
   safeStorage.setItem('firestore_quota_exhausted_time', Date.now().toString());
-  console.warn(`[Firebase] Operando em Modo de Contingência Local: ${reason || 'Cota ou indisponibilidade'}`);
   const currentUid = auth.currentUser?.uid || 'matheus_farias';
   safeStorage.setItem('simdb_active_uid', currentUid);
   try {
@@ -582,7 +589,7 @@ export function activateContingencyMode(reason?: string) {
 export async function setDoc(docRef: any, data: any, options?: any) {
   const path = docRef.customPath || '';
   
-  if (docRef.isOffline) {
+  if (docRef.isOffline || isContingencyActive()) {
     safeStorage.setItem("simdb_has_local_changes", "true");
     saveToLocalSimDB(path, data, options);
     return;
@@ -609,7 +616,7 @@ export async function setDoc(docRef: any, data: any, options?: any) {
 export async function updateDoc(docRef: any, data: any) {
   const path = docRef.customPath || '';
   
-  if (docRef.isOffline) {
+  if (docRef.isOffline || isContingencyActive()) {
     safeStorage.setItem("simdb_has_local_changes", "true");
     saveToLocalSimDB(path, data, { merge: true });
     return;
@@ -635,7 +642,7 @@ export async function updateDoc(docRef: any, data: any) {
 export async function deleteDoc(docRef: any) {
   const path = docRef.customPath || '';
   
-  if (docRef.isOffline) {
+  if (docRef.isOffline || isContingencyActive()) {
     const segments = path.split('/');
     if (segments.length > 2) {
       deleteFromLocalSimDB(path);
@@ -674,7 +681,7 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
   }
   listeners[path].push(onNext);
 
-  if (reference.isOffline) {
+  if (reference.isOffline || isContingencyActive()) {
     setTimeout(() => {
       if (path.split('/').length === 2) {
         const uId = path.split('/')[1];
@@ -800,3 +807,37 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
     listeners[path] = listeners[path].filter(cb => cb !== onNext);
   };
 }
+
+// Global safety interceptors to protect the app from unhandled quota exhaustion errors
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', (event) => {
+    const msg = event?.error?.message || event?.message || '';
+    if (isQuotaOrAvailabilityError(msg)) {
+      activateContingencyMode('Global error interceptor detected quota exhaustion');
+      event.preventDefault?.();
+      event.stopPropagation?.();
+    }
+  });
+
+  window.addEventListener('unhandledrejection', (event) => {
+    const msg = event?.reason?.message || String(event?.reason || '');
+    if (isQuotaOrAvailabilityError(msg)) {
+      activateContingencyMode('Unhandled rejection detected quota exhaustion');
+      event.preventDefault?.();
+      event.stopPropagation?.();
+    }
+  });
+
+  if (typeof console !== 'undefined') {
+    const origError = console.error;
+    console.error = (...args: any[]) => {
+      const msg = args.map(a => String(a?.message || a)).join(' ');
+      if (isQuotaOrAvailabilityError(msg)) {
+        activateContingencyMode('Console error quota interceptor');
+        return;
+      }
+      origError.apply(console, args);
+    };
+  }
+}
+
