@@ -74,6 +74,7 @@ import {
   Unlock,
   Wrench,
   UserPlus,
+  Layers,
 } from "lucide-react";
 import {
   AreaChart,
@@ -89,8 +90,10 @@ import {
 
 import { Button, Input, Card, Badge, IconButton, StatCard } from "./components/UI";
 import { SystemRepairModal } from "./components/SystemRepairModal";
+import { DuplicateClientsModal } from "./components/DuplicateClientsModal";
 import { StorageService, hashPassword } from "./services/storage";
 import { GeminiService } from "./services/gemini";
+import { compressImage } from "./services/imageUtils";
 import {
   Client,
   Service,
@@ -118,6 +121,7 @@ import {
   updateDoc,
   getDocFromServer,
   setSimulatedUser,
+  isQuotaOrAvailabilityError,
 } from "./firebase";
 import {
   onAuthStateChanged,
@@ -973,6 +977,32 @@ const App: React.FC = () => {
   const [quickClientPhoto, setQuickClientPhoto] = useState<string | null>(null);
   const [isSavingQuickClient, setIsSavingQuickClient] = useState(false);
   const [clientSearchFilter, setClientSearchFilter] = useState("");
+  const [isSubmittingClient, setIsSubmittingClient] = useState(false);
+  const [showDuplicateClientsModal, setShowDuplicateClientsModal] = useState(false);
+
+  // Contagem de contatos de clientes duplicados
+  const duplicateClientsCount = useMemo(() => {
+    if (!clients || clients.length < 2) return 0;
+    const names = new Set<string>();
+    const phones = new Set<string>();
+    let dups = 0;
+    for (const c of clients) {
+      const n = (c.name || "")
+        .trim()
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/\s+/g, " ");
+      const p = (c.phone || "").replace(/\D/g, "");
+      let isDup = false;
+      if (n.length > 1 && names.has(n)) isDup = true;
+      if (p.length >= 8 && phones.has(p)) isDup = true;
+      if (isDup) dups++;
+      if (n.length > 1) names.add(n);
+      if (p.length >= 8) phones.add(p);
+    }
+    return dups;
+  }, [clients]);
 
   // Estados para edição e duplicidade
   const [pendingClient, setPendingClient] = useState<{
@@ -990,6 +1020,7 @@ const App: React.FC = () => {
     type: "success" | "error" | "info";
   } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const lastSavedProfileRef = useRef<string>("");
 
   const isAdmin = useMemo(() => {
     if (!auth.currentUser?.email) return false;
@@ -1030,20 +1061,24 @@ const App: React.FC = () => {
     let isMounted = true;
     async function testConnection() {
       try {
-        // Allow a brief moment for initial socket handshake
         await new Promise((resolve) => setTimeout(resolve, 800));
         if (!isMounted) return;
+        if (localStorage.getItem("force_offline") === "true" || localStorage.getItem("firestore_quota_exhausted") === "true") {
+          console.warn("Firestore em modo de contingência local offline (preservando cota).");
+          return;
+        }
         await getDocFromServer(doc(db, "test", "connection"));
       } catch (error: any) {
         if (!isMounted) return;
         const msg = error instanceof Error ? error.message : String(error);
         if (
+          isQuotaOrAvailabilityError(error) ||
           error?.code === "unavailable" ||
           msg.includes("the client is offline") ||
           msg.includes("unavailable") ||
           msg.includes("Could not reach Cloud Firestore")
         ) {
-          console.warn("Firestore está operando em cache local / modo offline até restabelecer a conexão.");
+          console.warn("Firestore está operando em cache local / contingência até restabelecer a conexão.");
         }
       }
     }
@@ -1079,7 +1114,6 @@ const App: React.FC = () => {
 
   // Auth Listener
   useEffect(() => {
-    localStorage.removeItem("force_offline");
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setIsAuthenticated(true);
@@ -1092,38 +1126,49 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  // Auto-save Profile Settings
+  // Auto-save Profile Settings (com verificação de modificação real para evitar consumo desnecessário de cota)
   useEffect(() => {
     if (!isAuthenticated || !auth.currentUser || !session) return;
     const userId = effectiveUserId;
 
+    const currentProfilePayload = {
+      username: session.username || "Matheus Farias",
+      shopName: session.shopName || "",
+      phone: session.phone || "",
+      profileImage: session.profileImage || DEFAULT_PROFILE_IMG,
+      monthlyGoal: session.monthlyGoal || 0,
+      unavailableSlots: session.unavailableSlots || [],
+      businessHours: session.businessHours || null,
+      marketing_msg: marketingMsg || "",
+      campaign_goal: campaignGoal || "",
+      privacy_mode: !!isPrivacyMode,
+    };
+
+    const fingerprint = JSON.stringify(currentProfilePayload);
+
+    // Se ainda não inicializou a referência, armazena a atual e não envia
+    if (!lastSavedProfileRef.current) {
+      lastSavedProfileRef.current = fingerprint;
+      return;
+    }
+
+    // Se os dados não mudaram, não realiza nenhuma gravação
+    if (lastSavedProfileRef.current === fingerprint) {
+      return;
+    }
+
     const timeoutId = setTimeout(async () => {
       try {
-        const profileData: any = {
-          username: session.username || "Matheus Farias",
-          shopName: session.shopName || "",
-          phone: session.phone || "",
-          profileImage: session.profileImage || DEFAULT_PROFILE_IMG,
-          monthlyGoal: session.monthlyGoal || 0,
-          unavailableSlots: session.unavailableSlots || [],
-          marketing_msg: marketingMsg || "",
-          campaign_goal: campaignGoal || "",
-          privacy_mode: !!isPrivacyMode,
-          updatedAt: new Date().toISOString(),
-        };
-        if (session.businessHours) {
-          profileData.businessHours = session.businessHours;
-        }
-
+        lastSavedProfileRef.current = fingerprint;
         await setDoc(
           doc(db, "users", userId),
-          profileData,
+          currentProfilePayload,
           { merge: true },
         );
       } catch (err) {
         console.error("Erro ao salvar perfil automaticamente:", err);
       }
-    }, 1000);
+    }, 1500);
 
     return () => clearTimeout(timeoutId);
   }, [
@@ -1153,6 +1198,20 @@ const App: React.FC = () => {
       async (docSnap) => {
         if (docSnap.exists()) {
           const data = docSnap.data();
+          const incomingFingerprint = JSON.stringify({
+            username: data.username || "Matheus Farias",
+            shopName: data.shopName || "",
+            phone: data.phone || "",
+            profileImage: data.profileImage || DEFAULT_PROFILE_IMG,
+            monthlyGoal: data.monthlyGoal || 0,
+            unavailableSlots: data.unavailableSlots || [],
+            businessHours: data.businessHours || null,
+            marketing_msg: data.marketing_msg || "",
+            campaign_goal: data.campaign_goal || "",
+            privacy_mode: !!data.privacy_mode,
+          });
+          lastSavedProfileRef.current = incomingFingerprint;
+
           setSession({
             username: data.username,
             shopName: data.shopName,
@@ -1175,8 +1234,12 @@ const App: React.FC = () => {
             });
           }
 
-          // Sync any offline modifications up to Firestore once online
-          if (localStorage.getItem("force_offline") !== "true" && localStorage.getItem("simdb_has_local_changes") === "true") {
+          // Sync any offline modifications up to Firestore once safely online
+          if (
+            localStorage.getItem("force_offline") !== "true" &&
+            localStorage.getItem("firestore_quota_exhausted") !== "true" &&
+            localStorage.getItem("simdb_has_local_changes") === "true"
+          ) {
             syncLocalToCloud(userId);
           }
         } else {
@@ -1333,7 +1396,7 @@ const App: React.FC = () => {
       unsubNotifications();
       unsubRequests();
     };
-  }, [isAuthenticated, auth.currentUser]);
+  }, [isAuthenticated, auth.currentUser, effectiveUserId]);
 
   const stats = useMemo(() => {
     const today = new Date().toISOString().split("T")[0];
@@ -1886,6 +1949,14 @@ const App: React.FC = () => {
 
   const syncLocalToCloud = async (userId: string) => {
     if ((window as any).isSyncingData) return;
+    if (
+      localStorage.getItem("force_offline") === "true" ||
+      localStorage.getItem("firestore_quota_exhausted") === "true"
+    ) {
+      console.log("Sincronização em nuvem pausada: Sistema operando com segurança em modo de contingência local.");
+      return;
+    }
+
     (window as any).isSyncingData = true;
 
     try {
@@ -1903,8 +1974,10 @@ const App: React.FC = () => {
       ];
 
       let syncCount = 0;
+      let quotaExhausted = false;
 
       for (const col of collectionsToSync) {
+        if (quotaExhausted) break;
         const rawLocal = localStorage.getItem(`simdb_users_${userId}_${col}`);
         if (rawLocal) {
           try {
@@ -1912,9 +1985,16 @@ const App: React.FC = () => {
             if (Array.isArray(items)) {
               for (const item of items) {
                 if (item && item.id) {
-                  // Write standardly to both Firestore and local simulation
-                  await setDoc(doc(db, "users", userId, col, item.id), item);
-                  syncCount++;
+                  try {
+                    await setDoc(doc(db, "users", userId, col, item.id), item);
+                    syncCount++;
+                  } catch (writeErr) {
+                    if (isQuotaOrAvailabilityError(writeErr)) {
+                      console.warn("Cota diária ou indisponibilidade detectada durante sincronização; preservando alterações localmente.");
+                      quotaExhausted = true;
+                      break;
+                    }
+                  }
                 }
               }
             }
@@ -1922,6 +2002,10 @@ const App: React.FC = () => {
             console.error(`Error parsing or syncing collection ${col}:`, err);
           }
         }
+      }
+
+      if (quotaExhausted) {
+        return;
       }
 
       // Process pending deletions made while offline
@@ -1932,8 +2016,13 @@ const App: React.FC = () => {
           if (Array.isArray(pathsToDelete)) {
             for (const path of pathsToDelete) {
               const segments = path.split("/");
-              // Delete standardly from both
-              await deleteDoc(doc(db, ...segments));
+              try {
+                await deleteDoc(doc(db, ...segments));
+              } catch (delErr) {
+                if (isQuotaOrAvailabilityError(delErr)) {
+                  break;
+                }
+              }
             }
           }
         } catch (err) {
@@ -1955,7 +2044,9 @@ const App: React.FC = () => {
 
       localStorage.removeItem("simdb_has_local_changes");
       console.log(`Synchronization complete! Reconciled ${syncCount} items down to cloud database.`);
-      showToast("Alterações offline sincronizadas com o servidor físico!", "success");
+      if (syncCount > 0) {
+        showToast("Alterações sincronizadas com sucesso!", "success");
+      }
     } catch (err) {
       console.error("Critical error during cloud data reconciliation:", err);
     } finally {
@@ -3542,18 +3633,25 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePhotoChange = (
+  const handlePhotoChange = async (
     e: React.ChangeEvent<HTMLInputElement>,
     isEdit: boolean = false,
   ) => {
     const file = e.target.files?.[0];
     if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        if (isEdit) setEditPhotoBase64(reader.result as string);
-        else setClientPhotoBase64(reader.result as string);
-      };
-      reader.readAsDataURL(file);
+      try {
+        const compressed = await compressImage(file, 300, 300, 0.75);
+        if (isEdit) setEditPhotoBase64(compressed);
+        else setClientPhotoBase64(compressed);
+      } catch (err) {
+        console.warn("Compressão de foto ignorada, usando leitura direta:", err);
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          if (isEdit) setEditPhotoBase64(reader.result as string);
+          else setClientPhotoBase64(reader.result as string);
+        };
+        reader.readAsDataURL(file);
+      }
     }
   };
 
@@ -3562,33 +3660,57 @@ const App: React.FC = () => {
     phone: string,
     photo: string | null,
   ): Promise<string | null> => {
-    if (!auth.currentUser) return null;
-    const userId = effectiveUserId;
+    const trimmedName = (name || "").trim();
+    if (!trimmedName) {
+      showToast("Informe o nome do cliente!", "error");
+      return null;
+    }
+
+    const userId = effectiveUserId || "matheus_farias";
     const clientId = Date.now().toString();
 
+    const clientData: Client = {
+      id: clientId,
+      name: trimmedName,
+      phone: phone ? phone.trim() : "",
+      totalSpent: 0,
+      lastVisit: new Date().toISOString(),
+    };
+    if (photo) {
+      clientData.photo = photo;
+    }
+
+    // Inclusão otimista imediata para feedback instantâneo na interface
+    setClients((prev) => {
+      const exists = prev.some((c) => c.id === clientId);
+      if (exists) return prev;
+      return [clientData, ...prev];
+    });
+
     try {
-      const clientData: any = {
-        id: clientId,
-        name: name.trim(),
-        phone: phone ? phone.trim() : "",
-        totalSpent: 0,
-        lastVisit: new Date().toISOString(),
-      };
-      if (photo) {
-        clientData.photo = photo;
-      }
       await setDoc(doc(db, "users", userId, "clients", clientId), clientData);
       setPendingClient(null);
       setClientPhotoBase64(null);
       showToast("Novo membro VIP cadastrado!", "success");
       return clientId;
-    } catch (err) {
-      handleFirestoreError(
-        err,
-        OperationType.WRITE,
-        `users/${userId}/clients/${clientId}`,
-      );
-      return null;
+    } catch (err: any) {
+      console.warn("Salvando cliente via contingência local:", err);
+      try {
+        const collPath = `users_${userId}_clients`;
+        const raw = localStorage.getItem(`simdb_${collPath}`);
+        const items = raw ? JSON.parse(raw) : [];
+        if (!items.some((i: any) => i.id === clientId)) {
+          items.unshift(clientData);
+          localStorage.setItem(`simdb_${collPath}`, JSON.stringify(items));
+        }
+        localStorage.setItem("simdb_has_local_changes", "true");
+      } catch (localErr) {
+        console.warn("Erro ao registrar backup local de cliente:", localErr);
+      }
+      setPendingClient(null);
+      setClientPhotoBase64(null);
+      showToast("Cliente salvo com sucesso (modo seguro offline)!", "info");
+      return clientId;
     }
   };
 
@@ -3795,11 +3917,16 @@ const App: React.FC = () => {
   const handleClientSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const f = new FormData(e.target as HTMLFormElement);
-    const name = f.get("n") as string;
-    const phone = f.get("p") as string;
+    const name = ((f.get("n") as string) || "").trim();
+    const phone = ((f.get("p") as string) || "").trim();
+
+    if (!name) {
+      showToast("Por favor, preencha o nome do cliente.", "error");
+      return;
+    }
 
     const nameExists = clients.some(
-      (c) => c.name.toLowerCase().trim() === name.toLowerCase().trim(),
+      (c) => (c.name || "").toLowerCase().trim() === name.toLowerCase().trim(),
     );
 
     if (nameExists) {
@@ -3807,33 +3934,72 @@ const App: React.FC = () => {
       return;
     }
 
-    await saveNewClient(name, phone, clientPhotoBase64);
-    (e.target as HTMLFormElement).reset();
+    setIsSubmittingClient(true);
+    try {
+      const res = await saveNewClient(name, phone, clientPhotoBase64);
+      if (res) {
+        (e.target as HTMLFormElement).reset();
+        setClientPhotoBase64(null);
+      }
+    } catch (err) {
+      console.error("Erro ao submeter cliente:", err);
+      showToast("Não foi possível cadastrar o cliente.", "error");
+    } finally {
+      setIsSubmittingClient(false);
+    }
   };
 
   const handleEditSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingClient) return;
-    const userId = effectiveUserId;
+    const userId = effectiveUserId || "matheus_farias";
     const f = new FormData(e.target as HTMLFormElement);
-    const name = f.get("n") as string;
-    const phone = f.get("p") as string;
+    const name = ((f.get("n") as string) || "").trim();
+    const phone = ((f.get("p") as string) || "").trim();
+
+    if (!name) {
+      showToast("O nome do cliente é obrigatório.", "error");
+      return;
+    }
+
+    const updatedPhoto = editPhotoBase64 || editingClient.photo || null;
+
+    // Atualização otimista
+    setClients((prev) =>
+      prev.map((c) =>
+        c.id === editingClient.id
+          ? { ...c, name, phone, photo: updatedPhoto || undefined }
+          : c,
+      ),
+    );
 
     try {
       await updateDoc(doc(db, "users", userId, "clients", editingClient.id), {
         name,
         phone,
-        photo: editPhotoBase64 || editingClient.photo || null,
+        photo: updatedPhoto,
       });
       setEditingClient(null);
       setEditPhotoBase64(null);
-      showToast("Dados atualizados!");
+      showToast("Dados do cliente atualizados com sucesso!");
     } catch (err) {
-      handleFirestoreError(
-        err,
-        OperationType.UPDATE,
-        `users/${userId}/clients/${editingClient.id}`,
-      );
+      console.warn("Aviso ao atualizar no Firestore, mantendo backup local:", err);
+      try {
+        const collPath = `users_${userId}_clients`;
+        const raw = localStorage.getItem(`simdb_${collPath}`);
+        if (raw) {
+          const items = JSON.parse(raw);
+          const idx = items.findIndex((i: any) => i.id === editingClient.id);
+          if (idx >= 0) {
+            items[idx] = { ...items[idx], name, phone, photo: updatedPhoto };
+            localStorage.setItem(`simdb_${collPath}`, JSON.stringify(items));
+            localStorage.setItem("simdb_has_local_changes", "true");
+          }
+        }
+      } catch {}
+      setEditingClient(null);
+      setEditPhotoBase64(null);
+      showToast("Dados salvos localmente!", "info");
     }
   };
 
@@ -4074,10 +4240,10 @@ const App: React.FC = () => {
                   required
                 />
                 <Input
-                  label="WHATSAPP"
+                  label="WHATSAPP (OPCIONAL)"
                   name="p"
-                  defaultValue={editingClient.phone}
-                  required
+                  defaultValue={editingClient.phone || ""}
+                  placeholder="11999999999 (Opcional)"
                 />
                 <div className="flex gap-2 pt-4">
                   <Button type="submit" variant="success" className="flex-1">
@@ -4123,38 +4289,79 @@ const App: React.FC = () => {
               </div>
               <div className="grid grid-cols-1 gap-3 w-full">
                 <Button
+                  variant="success"
+                  className="py-3.5 text-xs font-black"
+                  onClick={async () => {
+                    const normPending = pendingClient.name.trim().toLowerCase();
+                    const existing = clients.find(
+                      (c) => (c.name || "").trim().toLowerCase() === normPending,
+                    );
+                    if (existing) {
+                      const updatedPhone = pendingClient.phone.trim() || existing.phone;
+                      const updatedPhoto = pendingClient.photo || existing.photo;
+                      setClients((prev) =>
+                        prev.map((c) =>
+                          c.id === existing.id
+                            ? { ...c, phone: updatedPhone, photo: updatedPhoto }
+                            : c,
+                        ),
+                      );
+                      try {
+                        await updateDoc(
+                          doc(db, "users", effectiveUserId, "clients", existing.id),
+                          {
+                            phone: updatedPhone,
+                            photo: updatedPhoto || null,
+                          },
+                        );
+                      } catch (err) {
+                        console.warn("Aviso ao atualizar contato existente:", err);
+                      }
+                      showToast(
+                        `Contato de "${existing.name}" atualizado (sem duplicidade)!`,
+                        "success",
+                      );
+                    }
+                    setPendingClient(null);
+                  }}
+                >
+                  ATUALIZAR EXISTENTE (EVITAR DUPLICADO)
+                </Button>
+                <Button
                   variant="primary"
-                  className="py-4"
-                  onClick={() => {
+                  className="py-3.5 text-xs font-black"
+                  onClick={async () => {
                     const count =
                       clients.filter((c) =>
-                        c.name.startsWith(pendingClient.name),
+                        (c.name || "").startsWith(pendingClient.name),
                       ).length + 1;
-                    saveNewClient(
+                    await saveNewClient(
                       `${pendingClient.name} ${count}`,
                       pendingClient.phone,
                       pendingClient.photo,
                     );
+                    setPendingClient(null);
                   }}
                 >
-                  DIFERENCIAR NOME
+                  DIFERENCIAR NOME (ADICIONAR NÚMERO)
                 </Button>
                 <Button
                   variant="warning"
-                  className="py-4"
-                  onClick={() =>
-                    saveNewClient(
+                  className="py-3.5 text-xs font-black"
+                  onClick={async () => {
+                    await saveNewClient(
                       pendingClient.name,
                       pendingClient.phone,
                       pendingClient.photo,
-                    )
-                  }
+                    );
+                    setPendingClient(null);
+                  }}
                 >
-                  CONTINUAR (MANTER IGUAL)
+                  CRIAR NOVO (MANTER IGUAL)
                 </Button>
                 <Button
                   variant="ghost"
-                  className="text-white font-black"
+                  className="text-white font-black py-2.5 text-xs"
                   onClick={() => setPendingClient(null)}
                 >
                   CORRIGIR DADOS
@@ -4234,14 +4441,19 @@ const App: React.FC = () => {
                       type="file"
                       className="hidden"
                       accept="image/*"
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const file = e.target.files?.[0];
                         if (file) {
-                          const reader = new FileReader();
-                          reader.onloadend = () => {
-                            setQuickClientPhoto(reader.result as string);
-                          };
-                          reader.readAsDataURL(file);
+                          try {
+                            const compressed = await compressImage(file, 300, 300, 0.75);
+                            setQuickClientPhoto(compressed);
+                          } catch (err) {
+                            const reader = new FileReader();
+                            reader.onloadend = () => {
+                              setQuickClientPhoto(reader.result as string);
+                            };
+                            reader.readAsDataURL(file);
+                          }
                         }
                       }}
                     />
@@ -4296,6 +4508,18 @@ const App: React.FC = () => {
         clients={clients}
         appointments={appointments}
         services={services}
+        showToast={showToast}
+      />
+
+      {/* Modal de Limpeza e Exclusão de Contatos Duplicados */}
+      <DuplicateClientsModal
+        isOpen={showDuplicateClientsModal}
+        onClose={() => setShowDuplicateClientsModal(false)}
+        userId={effectiveUserId}
+        clients={clients}
+        appointments={appointments}
+        onClientsUpdated={(updated) => setClients(updated)}
+        onAppointmentsUpdated={(updated) => setAppointments(updated)}
         showToast={showToast}
       />
 
@@ -5844,7 +6068,7 @@ const App: React.FC = () => {
                             className="text-slate-400 group-hover:text-elite-red-400 transition-colors shrink-0"
                           />
                           <span className="text-[10px] font-bold uppercase text-slate-400 group-hover:text-white transition-colors">
-                            Escolher Foto
+                            {clientPhotoBase64 ? "Trocar Foto" : "Escolher Foto"}
                           </span>
                           <input
                             type="file"
@@ -5854,17 +6078,31 @@ const App: React.FC = () => {
                           />
                         </label>
                         {clientPhotoBase64 && (
-                          <div className="h-11 w-11 rounded-xl border border-elite-red-500 overflow-hidden shadow-lg animate-in zoom-in duration-300 shrink-0">
+                          <div className="relative h-11 w-11 rounded-xl border border-elite-red-500 overflow-hidden shadow-lg animate-in zoom-in duration-300 shrink-0 group">
                             <img
                               src={clientPhotoBase64}
                               className="h-full w-full object-cover"
                             />
+                            <button
+                              type="button"
+                              onClick={() => setClientPhotoBase64(null)}
+                              className="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-white"
+                              title="Remover foto"
+                            >
+                              <X size={14} />
+                            </button>
                           </div>
                         )}
                       </div>
                     </div>
-                    <Button type="submit" size="md" className="w-full h-11">
-                      CADASTRAR CLIENTE
+                    <Button
+                      type="submit"
+                      size="md"
+                      className="w-full h-11"
+                      isLoading={isSubmittingClient}
+                      disabled={isSubmittingClient}
+                    >
+                      {isSubmittingClient ? "CADASTRANDO..." : "CADASTRAR CLIENTE"}
                     </Button>
                   </form>
                 </div>
@@ -5891,10 +6129,24 @@ const App: React.FC = () => {
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <span className="text-[10px] font-black uppercase text-slate-400 px-2">
-                    {clients.filter(c => !clientSearchFilter.trim() || c.name.toLowerCase().includes(clientSearchFilter.toLowerCase()) || (c.phone && c.phone.includes(clientSearchFilter))).length} de {clients.length} Clientes
+                    {clients.filter(c => !clientSearchFilter.trim() || (c.name || "").toLowerCase().includes(clientSearchFilter.toLowerCase()) || (c.phone && c.phone.includes(clientSearchFilter))).length} de {clients.length} Clientes
                   </span>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setShowDuplicateClientsModal(true)}
+                    icon={<Layers size={14} className={duplicateClientsCount > 0 ? "text-amber-400" : "text-slate-400"} />}
+                    className="relative text-xs font-bold"
+                  >
+                    Limpar Duplicados
+                    {duplicateClientsCount > 0 && (
+                      <span className="ml-1.5 bg-elite-red-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full">
+                        {duplicateClientsCount}
+                      </span>
+                    )}
+                  </Button>
                   <Button
                     variant="cyan"
                     size="sm"
@@ -5906,91 +6158,158 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
-                {clients
-                  .filter((c) => 
-                    !clientSearchFilter.trim() ||
-                    c.name.toLowerCase().includes(clientSearchFilter.toLowerCase()) ||
-                    (c.phone && c.phone.includes(clientSearchFilter))
-                  )
-                  .map((c) => (
-                  <div
-                    key={c.id}
-                    className="bg-slate-900/70 border border-white/[0.08] p-4 sm:p-5 rounded-2xl sm:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group hover:bg-slate-900 hover:border-white/15 transition-all shadow-xl"
-                  >
-                    <div className="flex items-center gap-3.5 sm:gap-4 min-w-0">
-                      <div className="h-13 w-13 sm:h-14 sm:w-14 rounded-2xl bg-slate-950 border border-white/10 flex items-center justify-center overflow-hidden shadow-inner shrink-0">
-                        {c.photo ? (
-                          <img
-                            src={c.photo}
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <span className="text-xl sm:text-2xl font-black text-elite-red-500 uppercase">
-                            {c.name.charAt(0)}
-                          </span>
-                        )}
+              {(() => {
+                const searchLower = clientSearchFilter.trim().toLowerCase();
+                const filtered = [...clients]
+                  .sort((a, b) => {
+                    // Mais recentes primeiro (lastVisit ou ID timestamp)
+                    const dateA = a.lastVisit ? new Date(a.lastVisit).getTime() : 0;
+                    const dateB = b.lastVisit ? new Date(b.lastVisit).getTime() : 0;
+                    if (dateB !== dateA) return dateB - dateA;
+                    return (a.name || "").localeCompare(b.name || "");
+                  })
+                  .filter((c) => {
+                    if (!searchLower) return true;
+                    const nameMatch = (c.name || "").toLowerCase().includes(searchLower);
+                    const phoneMatch = Boolean(c.phone && c.phone.includes(clientSearchFilter.trim()));
+                    return nameMatch || phoneMatch;
+                  });
+
+                if (filtered.length === 0) {
+                  return (
+                    <div className="bg-slate-900/40 border border-white/5 rounded-3xl p-12 text-center flex flex-col items-center justify-center space-y-3">
+                      <div className="h-14 w-14 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-center text-slate-500">
+                        <Users size={28} />
                       </div>
-                      <div className="min-w-0">
-                        <h4 className="text-sm sm:text-base font-black text-white uppercase tracking-tight italic truncate">
-                          {c.name}
-                        </h4>
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <Badge
-                            variant="success"
-                            size="sm"
-                          >
-                            {formatCurrency(c.totalSpent)} GASTO
-                          </Badge>
+                      <div className="space-y-1 max-w-sm">
+                        <p className="text-white font-bold text-sm">
+                          {clientSearchFilter.trim() ? "Nenhum cliente encontrado" : "Nenhum cliente cadastrado"}
+                        </p>
+                        <p className="text-slate-400 text-xs">
+                          {clientSearchFilter.trim()
+                            ? "Tente buscar com outro nome ou telefone."
+                            : "Preencha o formulário acima para registrar o primeiro cliente VIP."}
+                        </p>
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+                    {filtered.map((c) => {
+                      const cleanPhone = (c.phone || "").replace(/\D/g, "");
+                      return (
+                        <div
+                          key={c.id}
+                          className="bg-slate-900/70 border border-white/[0.08] p-4 sm:p-5 rounded-2xl sm:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group hover:bg-slate-900 hover:border-white/15 transition-all shadow-xl"
+                        >
+                          <div className="flex items-center gap-3.5 sm:gap-4 min-w-0">
+                            <div className="h-13 w-13 sm:h-14 sm:w-14 rounded-2xl bg-slate-950 border border-white/10 flex items-center justify-center overflow-hidden shadow-inner shrink-0">
+                              {c.photo ? (
+                                <img
+                                  src={c.photo}
+                                  alt={c.name}
+                                  className="h-full w-full object-cover"
+                                />
+                              ) : (
+                                <span className="text-xl sm:text-2xl font-black text-elite-red-500 uppercase">
+                                  {(c.name || "C").charAt(0)}
+                                </span>
+                              )}
+                            </div>
+                            <div className="min-w-0 space-y-1">
+                              <h4 className="text-sm sm:text-base font-black text-white uppercase tracking-tight italic truncate">
+                                {c.name || "Sem Nome"}
+                              </h4>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge
+                                  variant="success"
+                                  size="sm"
+                                >
+                                  {formatCurrency(c.totalSpent || 0)} GASTO
+                                </Badge>
+                                {c.phone ? (
+                                  <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1">
+                                    <Phone size={11} className="text-elite-cyan-400 shrink-0" />
+                                    {c.phone}
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] text-slate-500 italic">
+                                    Sem WhatsApp
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 sm:gap-2 self-end sm:self-center shrink-0">
+                            <IconButton
+                              icon={<Edit3 size={16} />}
+                              variant="cyan"
+                              size="md"
+                              onClick={() => setEditingClient(c)}
+                              title="Editar Cliente"
+                            />
+                            <IconButton
+                              icon={<MessageCircle size={16} />}
+                              variant={cleanPhone ? "success" : "ghost"}
+                              size="md"
+                              disabled={!cleanPhone}
+                              onClick={() => {
+                                if (!cleanPhone) {
+                                  showToast("Cliente sem WhatsApp cadastrado.", "info");
+                                  return;
+                                }
+                                window.open(
+                                  `https://wa.me/55${cleanPhone}`,
+                                  "_blank",
+                                );
+                              }}
+                              title={cleanPhone ? "Abrir WhatsApp" : "Sem WhatsApp"}
+                            />
+                            <IconButton
+                              icon={<Trash2 size={16} />}
+                              variant="danger"
+                              size="md"
+                              onClick={async () => {
+                                const userId = effectiveUserId || "matheus_farias";
+                                if (!userId) return;
+                                const clientName = c.name || "este cliente";
+                                if (!window.confirm(`Deseja realmente remover o cliente "${clientName}"?`)) {
+                                  return;
+                                }
+
+                                // Remoção otimista imediata
+                                setClients((prev) => prev.filter((item) => item.id !== c.id));
+
+                                try {
+                                  await deleteDoc(
+                                    doc(db, "users", userId, "clients", c.id),
+                                  );
+                                  showToast("Cliente removido com sucesso!");
+                                } catch (err) {
+                                  console.warn("Aviso ao remover no Firestore, atualizando backup local:", err);
+                                  try {
+                                    const collPath = `users_${userId}_clients`;
+                                    const raw = localStorage.getItem(`simdb_${collPath}`);
+                                    if (raw) {
+                                      const items = JSON.parse(raw).filter((i: any) => i.id !== c.id);
+                                      localStorage.setItem(`simdb_${collPath}`, JSON.stringify(items));
+                                      localStorage.setItem("simdb_has_local_changes", "true");
+                                    }
+                                  } catch {}
+                                  showToast("Cliente removido localmente.", "info");
+                                }
+                              }}
+                              title="Excluir Cliente"
+                            />
+                          </div>
                         </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1.5 sm:gap-2 self-end sm:self-center shrink-0">
-                      <IconButton
-                        icon={<Edit3 size={16} />}
-                        variant="cyan"
-                        size="md"
-                        onClick={() => setEditingClient(c)}
-                        title="Editar Cliente"
-                      />
-                      <IconButton
-                        icon={<MessageCircle size={16} />}
-                        variant="success"
-                        size="md"
-                        onClick={() =>
-                          window.open(
-                            `https://wa.me/55${c.phone.replace(/\D/g, "")}`,
-                            "_blank",
-                          )
-                        }
-                        title="Abrir WhatsApp"
-                      />
-                      <IconButton
-                        icon={<Trash2 size={16} />}
-                        variant="danger"
-                        size="md"
-                        onClick={async () => {
-                          const userId = effectiveUserId;
-                          if (!userId) return;
-                          try {
-                            await deleteDoc(
-                              doc(db, "users", userId, "clients", c.id),
-                            );
-                            showToast("Cliente removido com sucesso!");
-                          } catch (err) {
-                            handleFirestoreError(
-                              err,
-                              OperationType.DELETE,
-                              `users/${userId}/clients/${c.id}`,
-                            );
-                          }
-                        }}
-                        title="Excluir Cliente"
-                      />
-                    </div>
+                      );
+                    })}
                   </div>
-                ))}
-              </div>
+                );
+              })()}
             </div>
           )}
 

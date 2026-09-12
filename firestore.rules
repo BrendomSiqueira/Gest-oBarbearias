@@ -91,10 +91,10 @@ service cloud.firestore {
       return data.keys().hasAll(['id', 'name', 'totalSpent']) &&
              isValidId(data.id) &&
              data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
-             (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('phone' in data) || data.phone == null || (data.phone is string && data.phone.size() <= 50)) &&
              data.totalSpent is number && data.totalSpent >= 0 &&
-             (!('lastVisit' in data) || isValidDateString(data.lastVisit)) &&
-             (!('photo' in data) || data.photo == null || (data.photo is string && data.photo.size() <= 1000000));
+             (!('lastVisit' in data) || data.lastVisit == null || isValidDateString(data.lastVisit)) &&
+             (!('photo' in data) || data.photo == null || (data.photo is string && data.photo.size() <= 1500000));
     }
 
     function isValidService(data) {

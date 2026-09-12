@@ -14,7 +14,8 @@ import {
   where as originalWhere,
   deleteDoc as originalDeleteDoc,
   updateDoc as originalUpdateDoc,
-  getDocFromServer as originalGetDocFromServer
+  getDocFromServer as originalGetDocFromServer,
+  disableNetwork
 } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
 
@@ -69,8 +70,20 @@ const safeStorage = {
 };
 
 // Initialize simulated session based on previous activeUID
-// Always clean force_offline on reload to restore real Firestore connection
-safeStorage.removeItem('force_offline');
+// Check if Firestore quota was recently exceeded to maintain seamless offline contingency
+const quotaExhaustedTime = Number(safeStorage.getItem('firestore_quota_exhausted_time') || '0');
+const isRecentQuotaExhaustion = Date.now() - quotaExhaustedTime < 6 * 60 * 60 * 1000;
+
+if (safeStorage.getItem('firestore_quota_exhausted') === 'true' && isRecentQuotaExhaustion) {
+  safeStorage.setItem('force_offline', 'true');
+  console.warn('[Firebase] Mantendo Modo de Contingência Local Ativo (Cota gratuita diária do Firestore atingida). Dados salvos localmente.');
+  try {
+    disableNetwork(firestoreDb).catch(() => {});
+  } catch {}
+} else {
+  safeStorage.removeItem('force_offline');
+  safeStorage.removeItem('firestore_quota_exhausted');
+}
 
 let activeUid = safeStorage.getItem('simdb_active_uid');
 if (!activeUid || activeUid === 'offline_demo' || activeUid.startsWith('user_')) {
@@ -531,26 +544,39 @@ export async function getDocFromServer(docRef: any) {
   }
 }
 
-function isQuotaOrAvailabilityError(err: unknown): boolean {
+export function isQuotaOrAvailabilityError(err: unknown): boolean {
   const errMsg = err instanceof Error ? err.message : String(err);
+  const lower = errMsg.toLowerCase();
+  const code = (err as any)?.code ? String((err as any).code).toLowerCase() : "";
   return (
-    errMsg.toLowerCase().includes('quota') || 
-    errMsg.toLowerCase().includes('exhausted') || 
-    errMsg.toLowerCase().includes('resource-exhausted') || 
-    errMsg.toLowerCase().includes('unavailable') || 
-    errMsg.toLowerCase().includes('failed-precondition') ||
-    errMsg.toLowerCase().includes('offline')
+    code === 'resource-exhausted' ||
+    code === 'unavailable' ||
+    code === 'failed-precondition' ||
+    lower.includes('quota') || 
+    lower.includes('exhausted') || 
+    lower.includes('resource-exhausted') || 
+    lower.includes('resource_exhausted') || 
+    lower.includes('unavailable') || 
+    lower.includes('failed-precondition') ||
+    lower.includes('offline') ||
+    lower.includes('could not reach') ||
+    lower.includes('network') ||
+    lower.includes('timeout') ||
+    lower.includes('deadline') ||
+    lower.includes('failed to fetch')
   );
 }
 
-function activateContingencyMode() {
-  if (safeStorage.getItem('force_offline') === 'true') {
-    return;
-  }
-  console.warn('Firestore database operating in Local Contingency Mode...');
+export function activateContingencyMode(reason?: string) {
   safeStorage.setItem('force_offline', 'true');
+  safeStorage.setItem('firestore_quota_exhausted', 'true');
+  safeStorage.setItem('firestore_quota_exhausted_time', Date.now().toString());
+  console.warn(`[Firebase] Operando em Modo de Contingência Local: ${reason || 'Cota ou indisponibilidade'}`);
   const currentUid = auth.currentUser?.uid || 'matheus_farias';
   safeStorage.setItem('simdb_active_uid', currentUid);
+  try {
+    disableNetwork(firestoreDb).catch(() => {});
+  } catch {}
 }
 
 export async function setDoc(docRef: any, data: any, options?: any) {
@@ -721,14 +747,36 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
   };
 
   const wrappedOnError = (err: any) => {
-    console.warn('onSnapshot error on path:', customPath, err);
+    console.warn('onSnapshot intercepted error on path:', customPath, err);
+    
+    const isTransientOrQuota = isQuotaOrAvailabilityError(err);
+    if (isTransientOrQuota) {
+      activateContingencyMode('onSnapshot quota/unavailable error');
+    }
+
     try {
       if (customPath) {
-        const collPath = customPath.replace(/\//g, '_');
-        const items = getMockCollectionData(collPath);
-        if (items && items.length > 0) {
+        const segments = customPath.split('/');
+        if (segments.length === 2) {
+          // Document path like users/matheus_farias or system/config
+          const uId = segments[1];
+          const storageKey = uId === 'offline_demo' ? 'simdb_user_offline_demo' : `simdb_user_${uId}`;
+          const userData = safeStorage.getItem(storageKey);
+          const val = userData ? JSON.parse(rawOr(userData, '{}')) : {
+            ...getInitialUserData(),
+            username: uId,
+            shopName: uId === 'matheus_farias' ? 'Barbearia Matheus Farias' : `Barbearia de ${uId.replace(/_/g, ' ')}`,
+          };
           onNext({
-            docs: items.map((item: any) => ({
+            exists: () => true,
+            data: () => val
+          });
+        } else {
+          // Collection path like users/matheus_farias/clients
+          const collPath = customPath.replace(/\//g, '_');
+          const items = getMockCollectionData(collPath);
+          onNext({
+            docs: (items || []).map((item: any) => ({
               id: item.id,
               data: () => item
             }))
@@ -739,15 +787,8 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
       console.warn('Fallback recovery error:', e);
     }
 
-    const errMsg = err instanceof Error ? err.message : String(err || '');
-    const isTransient = 
-      err?.code === 'unavailable' || 
-      errMsg.toLowerCase().includes('unavailable') || 
-      errMsg.toLowerCase().includes('offline') ||
-      errMsg.toLowerCase().includes('could not reach cloud firestore');
-
-    // Only forward non-transient errors (e.g. permission-denied) to onError to avoid crashing during reconnects
-    if (!isTransient && onError) {
+    // Only forward non-transient, non-quota errors (e.g. permission-denied) to onError to avoid crashing during reconnects/quota limits
+    if (!isTransientOrQuota && onError) {
       onError(err);
     }
   };
