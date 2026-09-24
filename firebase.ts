@@ -15,7 +15,8 @@ import {
   deleteDoc as originalDeleteDoc,
   updateDoc as originalUpdateDoc,
   getDocFromServer as originalGetDocFromServer,
-  disableNetwork
+  disableNetwork,
+  enableNetwork
 } from 'firebase/firestore';
 import firebaseConfig from './firebase-applet-config.json';
 
@@ -70,28 +71,58 @@ const safeStorage = {
 };
 
 export const isContingencyActive = (): boolean => {
-  return (
-    safeStorage.getItem('force_offline') === 'true' ||
-    safeStorage.getItem('firestore_quota_exhausted') === 'true'
-  );
+  const forceOffline = safeStorage.getItem('force_offline') === 'true';
+  const quotaExhausted = safeStorage.getItem('firestore_quota_exhausted') === 'true';
+  const quotaTime = safeStorage.getItem('firestore_quota_exhausted_time');
+  
+  if (quotaExhausted && quotaTime) {
+    const elapsed = Date.now() - Number(quotaTime);
+    // Auto-recover after 10 minutes so fresh sessions or expired quota resets automatically
+    if (elapsed > 10 * 60 * 1000) {
+      safeStorage.removeItem('force_offline');
+      safeStorage.removeItem('firestore_quota_exhausted');
+      safeStorage.removeItem('firestore_quota_exhausted_time');
+      try {
+        enableNetwork(firestoreDb).catch(() => {});
+      } catch {}
+      return false;
+    }
+    return true;
+  }
+  return forceOffline;
 };
 
-// Initialize simulated session based on previous activeUID
-// Check if Firestore quota was exceeded or needs offline contingency
-const quotaExhaustedSetting = safeStorage.getItem('firestore_quota_exhausted');
-if (quotaExhaustedSetting !== 'false') {
-  safeStorage.setItem('force_offline', 'true');
-  safeStorage.setItem('firestore_quota_exhausted', 'true');
-  if (!safeStorage.getItem('firestore_quota_exhausted_time')) {
-    safeStorage.setItem('firestore_quota_exhausted_time', Date.now().toString());
-  }
+export const restoreOnlineConnection = async () => {
+  safeStorage.removeItem('force_offline');
+  safeStorage.removeItem('firestore_quota_exhausted');
+  safeStorage.removeItem('firestore_quota_exhausted_time');
   try {
-    disableNetwork(firestoreDb).catch(() => {});
-  } catch {}
+    await enableNetwork(firestoreDb);
+    console.log('[Connection Restored]: Firestore network enabled successfully.');
+  } catch (err) {
+    console.warn('[Connection Restore Warning]:', err);
+  }
+};
+
+// Clear any stale offline flags on fresh app startup to ensure real database is always contacted
+const quotaTimeOnStart = safeStorage.getItem('firestore_quota_exhausted_time');
+if (quotaTimeOnStart) {
+  const elapsed = Date.now() - Number(quotaTimeOnStart);
+  if (elapsed > 10 * 60 * 1000) {
+    safeStorage.removeItem('force_offline');
+    safeStorage.removeItem('firestore_quota_exhausted');
+    safeStorage.removeItem('firestore_quota_exhausted_time');
+  }
 } else {
+  // If no timestamp recorded, remove any accidental offline flag
   safeStorage.removeItem('force_offline');
   safeStorage.removeItem('firestore_quota_exhausted');
 }
+
+// Ensure network connection is active
+try {
+  enableNetwork(firestoreDb).catch(() => {});
+} catch {}
 
 let activeUid = safeStorage.getItem('simdb_active_uid');
 if (!activeUid || activeUid === 'offline_demo' || activeUid.startsWith('user_')) {
@@ -742,7 +773,12 @@ export function onSnapshot(reference: any, onNext: any, onError?: any) {
               });
               saveMockCollectionData(collPath, mergedDocs);
             } else {
-              saveMockCollectionData(collPath, docs);
+              const localItems = getMockCollectionData(collPath);
+              if (docs.length === 0 && localItems.length > 0) {
+                console.warn(`[Data Protection] Cloud returned 0 items for ${collPath} while local storage has ${localItems.length} items. Preserving local records.`);
+              } else {
+                saveMockCollectionData(collPath, docs);
+              }
             }
           }
         }

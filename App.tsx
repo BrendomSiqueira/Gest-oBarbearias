@@ -70,11 +70,13 @@ import {
   Database,
   RefreshCw,
   AlertCircle,
+  XCircle,
   Lock,
   Unlock,
   Wrench,
   UserPlus,
   Layers,
+  Award,
 } from "lucide-react";
 import {
   AreaChart,
@@ -98,6 +100,7 @@ import {
   Client,
   Service,
   Appointment,
+  AppointmentHistoryEntry,
   AppointmentStatus,
   UserSession,
   Tab,
@@ -232,6 +235,10 @@ const minutesToTime = (min: number): string => {
 
 export const getEffectiveBarberId = (user: any): string => {
   if (!user) return "matheus_farias";
+  if (typeof user === "string") {
+    if (user === "offline_demo") return "matheus_farias";
+    return user.trim() || "matheus_farias";
+  }
   if (user.uid === "offline_demo") return "matheus_farias";
   const email = user.email?.toLowerCase() || "";
   if (
@@ -912,7 +919,9 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>(Tab.Dashboard);
   const [financeSubTab, setFinanceSubTab] = useState<
     "paid" | "pending" | "adjustments"
-  >("pending");
+  >("paid");
+  const [financeSearchTerm, setFinanceSearchTerm] = useState("");
+  const [financeMonthFilter, setFinanceMonthFilter] = useState<string>("all");
   const [bookingSubTab, setBookingSubTab] = useState<
     "solicitacoes" | "bloqueios" | "expediente"
   >("solicitacoes");
@@ -957,6 +966,12 @@ const App: React.FC = () => {
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectReasonText, setRejectReasonText] = useState("");
   const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
+
+  // Estados de Auditoria, Rastreabilidade e Cancelamento Estruturado
+  const [selectedAptForHistory, setSelectedAptForHistory] = useState<Appointment | null>(null);
+  const [cancellingApt, setCancellingApt] = useState<Appointment | null>(null);
+  const [cancelReasonText, setCancelReasonText] = useState("");
+  const [agendaFilterStatus, setAgendaFilterStatus] = useState<"all" | "pending" | "completed" | "cancelled">("all");
 
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateString());
   const [reportMonth, setReportMonth] = useState(
@@ -1415,6 +1430,14 @@ const App: React.FC = () => {
     };
   }, [isAuthenticated, auth.currentUser, effectiveUserId]);
 
+  // Rotina contínua de regras automáticas e retenção do sistema
+  useEffect(() => {
+    if (!isAuthenticated || !auth.currentUser) return;
+    runSystemAutoCancellationRules();
+    const interval = setInterval(runSystemAutoCancellationRules, 120000); // Executa a cada 2 minutos
+    return () => clearInterval(interval);
+  }, [isAuthenticated, auth.currentUser, effectiveUserId, allRequests.length]);
+
   const stats = useMemo(() => {
     const today = getLocalDateString();
     const monthPrefix = today.substring(0, 7);
@@ -1838,21 +1861,63 @@ const App: React.FC = () => {
       ? customPrice
       : (apt.finalPrice || 0);
 
+    const nowIso = new Date().toISOString();
+    const historyEntry: AppointmentHistoryEntry = {
+      id: `${Date.now()}_completed`,
+      action: "completed",
+      timestamp: nowIso,
+      actor: auth.currentUser.displayName || "Barbeiro",
+      details: `Atendimento finalizado no valor de R$ ${finalAmount.toFixed(2)} (${paidStatus ? "Pago" : "Débito / Pendente"})`,
+    };
+
+    const updatedHistory = [
+      ...(Array.isArray(apt.history) ? apt.history : []),
+      historyEntry,
+    ];
+
+    // Atualização otimista imediata na UI
+    setAppointments((prev) =>
+      prev.map((a) =>
+        a.id === id
+          ? {
+              ...a,
+              completed: true,
+              completedAt: nowIso,
+              paid: paidStatus,
+              finalPrice: finalAmount,
+              pricePending: false,
+              history: updatedHistory,
+            }
+          : a,
+      ),
+    );
+
     try {
       await updateDoc(doc(db, "users", userId, "appointments", id), {
         completed: true,
+        completedAt: nowIso,
         paid: paidStatus,
         finalPrice: finalAmount,
         pricePending: false,
+        history: updatedHistory,
       });
 
       if (paidStatus && finalAmount > 0) {
-        const client = clients.find((c) => c.id === apt.clientId);
+        // Encontra o cliente por ID, telefone ou nome
+        const client = clients.find(
+          (c) => c.id === apt.clientId || (apt.clientPhone && c.phone === apt.clientPhone),
+        );
         if (client) {
+          const newSpent = (client.totalSpent || 0) + finalAmount;
           await updateDoc(doc(db, "users", userId, "clients", client.id), {
-            totalSpent: (client.totalSpent || 0) + finalAmount,
-            lastVisit: new Date().toISOString(),
+            totalSpent: newSpent,
+            lastVisit: nowIso,
           });
+          setClients((prev) =>
+            prev.map((c) =>
+              c.id === client.id ? { ...c, totalSpent: newSpent, lastVisit: nowIso } : c,
+            ),
+          );
         }
       }
 
@@ -1861,7 +1926,7 @@ const App: React.FC = () => {
         paidStatus
           ? `Atendimento concluído! R$ ${finalAmount.toFixed(2)} recebido.`
           : `Atendimento finalizado em débito (R$ ${finalAmount.toFixed(2)} pendente).`,
-        "success"
+        "success",
       );
     } catch (err) {
       handleFirestoreError(
@@ -1869,6 +1934,187 @@ const App: React.FC = () => {
         OperationType.UPDATE,
         `users/${userId}/appointments/${id}`,
       );
+    }
+  };
+
+  const handleCancelAppointment = async (
+    apt: Appointment,
+    reasonText?: string,
+    isAuto: boolean = false,
+  ) => {
+    if (!auth.currentUser) return;
+    const userId = effectiveUserId;
+    if (!userId) return;
+
+    const reason =
+      reasonText?.trim() ||
+      (isAuto
+        ? "Cancelamento automático: horário solicitado expirou sem atendimento."
+        : "Cancelado manualmente pelo barbeiro.");
+    const nowIso = new Date().toISOString();
+    const actorName = isAuto
+      ? "Sistema"
+      : (auth.currentUser.displayName || "Barbeiro");
+    const actionType = isAuto ? "auto_cancelled" : "cancelled";
+
+    const historyEntry: AppointmentHistoryEntry = {
+      id: `${Date.now()}_cancel`,
+      action: actionType as any,
+      timestamp: nowIso,
+      actor: actorName,
+      details: reason,
+    };
+
+    const updatedHistory = [
+      ...(Array.isArray(apt.history) ? apt.history : []),
+      historyEntry,
+    ];
+
+    // Atualização otimista
+    setAppointments((prev) =>
+      prev.map((a) =>
+        a.id === apt.id
+          ? {
+              ...a,
+              status: AppointmentStatus.Rejected,
+              cancelledAt: nowIso,
+              cancelledBy: actorName,
+              cancelReason: reason,
+              history: updatedHistory,
+            }
+          : a,
+      ),
+    );
+
+    try {
+      await updateDoc(doc(db, "users", userId, "appointments", apt.id), {
+        status: AppointmentStatus.Rejected,
+        cancelledAt: nowIso,
+        cancelledBy: actorName,
+        cancelReason: reason,
+        history: updatedHistory,
+      });
+
+      // Registra notificação interna do cancelamento
+      const notifId = Date.now().toString();
+      await setDoc(doc(db, "users", userId, "notifications", notifId), {
+        id: notifId,
+        title: isAuto ? "Agendamento Cancelado Automaticamente" : "Agendamento Cancelado",
+        message: `Agendamento de ${apt.clientName || "Cliente"} (${apt.time}) foi cancelado. Motivo: ${reason}`,
+        date: nowIso,
+        read: false,
+        type: "appointment_cancelled",
+        appointmentId: apt.id,
+      });
+
+      setCancellingApt(null);
+      setCancelReasonText("");
+      showToast(
+        isAuto
+          ? `Agendamento cancelado automaticamente pelo sistema.`
+          : `Agendamento cancelado. Histórico e integridade preservados!`,
+        "info",
+      );
+    } catch (err) {
+      console.error("Erro ao cancelar agendamento:", err);
+      handleFirestoreError(
+        err,
+        OperationType.UPDATE,
+        `users/${userId}/appointments/${apt.id}`,
+      );
+    }
+  };
+
+  const handleHardDeleteAppointment = async (aptId: string) => {
+    if (!auth.currentUser) return;
+    const userId = effectiveUserId;
+    if (!userId) return;
+
+    if (
+      !window.confirm(
+        "Atenção: Deseja realmente excluir permanentemente este agendamento da base de dados? Esta ação remove todo o histórico e não poderá ser desfeita.",
+      )
+    ) {
+      return;
+    }
+
+    // Otimista
+    setAppointments((prev) => prev.filter((a) => a.id !== aptId));
+    setSelectedAptForHistory(null);
+    setCancellingApt(null);
+
+    try {
+      await deleteDoc(doc(db, "users", userId, "appointments", aptId));
+      showToast("Agendamento excluído definitivamente.", "info");
+    } catch (err) {
+      handleFirestoreError(
+        err,
+        OperationType.DELETE,
+        `users/${userId}/appointments/${aptId}`,
+      );
+    }
+  };
+
+  const runSystemAutoCancellationRules = async () => {
+    if (!auth.currentUser || !effectiveUserId) return;
+    const userId = effectiveUserId;
+    const todayStr = getLocalDateString();
+    const now = new Date();
+    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const graceMinutes = 15; // 15 minutos de tolerância após o horário solicitado
+
+    const expiredRequests = allRequests.filter((r) => {
+      if (r.status !== "pending") return false;
+      if (r.date < todayStr) return true;
+      if (r.date === todayStr) {
+        const slotMin = timeToMinutes(r.time);
+        return nowMinutes > slotMin + graceMinutes;
+      }
+      return false;
+    });
+
+    if (expiredRequests.length > 0) {
+      console.log(`[Regras de Sistema] Processando cancelamento automático de ${expiredRequests.length} solicitações expiradas.`);
+      for (const req of expiredRequests) {
+        const reason = "Cancelamento automático: horário solicitado expirou sem confirmação.";
+        const nowIso = new Date().toISOString();
+        try {
+          await updateDoc(doc(db, "users", userId, "requests", req.id), {
+            status: "rejected",
+            rejectReason: reason,
+            updatedAt: nowIso,
+            autoCancelled: true,
+          });
+
+          setAllRequests((prev) =>
+            prev.map((r) =>
+              r.id === req.id
+                ? {
+                    ...r,
+                    status: "rejected",
+                    rejectReason: reason,
+                    updatedAt: nowIso,
+                    autoCancelled: true,
+                  }
+                : r,
+            ),
+          );
+        } catch (e) {
+          console.warn("Falha no auto-cancelamento da solicitação:", e);
+        }
+      }
+
+      try {
+        const notifId = Date.now().toString();
+        await setDoc(doc(db, "users", userId, "notifications", notifId), {
+          id: notifId,
+          title: "Cancelamento Automático de Solicitações",
+          message: `${expiredRequests.length} solicitação(ões) pendente(s) expirada(s) foram canceladas automaticamente conforme regras do sistema.`,
+          date: new Date().toISOString(),
+          read: false,
+          type: "auto_cancel",
+        });
+      } catch {}
     }
   };
 
@@ -3843,6 +4089,24 @@ const App: React.FC = () => {
         if (clientId) {
           const aptId = request.id || Date.now().toString();
           const service = services.find((s) => s.id === request.serviceId);
+          const nowIso = new Date().toISOString();
+          const historyEntries: AppointmentHistoryEntry[] = [
+            {
+              id: `${Date.now()}_req`,
+              action: "created",
+              timestamp: request.createdAt || nowIso,
+              actor: `Cliente (${request.clientName || "Online"})`,
+              details: `Solicitado via link online para ${request.date.split("-").reverse().join("/")} às ${request.time}`,
+            },
+            {
+              id: `${Date.now()}_acc`,
+              action: "confirmed",
+              timestamp: nowIso,
+              actor: auth.currentUser?.displayName || "Barbeiro",
+              details: "Solicitação aceita e agendamento confirmado na agenda",
+            },
+          ];
+
           const newApt: Appointment = {
             id: aptId,
             clientId,
@@ -3855,17 +4119,30 @@ const App: React.FC = () => {
             paid: false,
             finalPrice: service?.price || 0,
             status: AppointmentStatus.Confirmed,
+            createdAt: request.createdAt || nowIso,
+            history: historyEntries,
           };
 
-          await setDoc(doc(db, "users", userId, "appointments", aptId), {
-            ...newApt,
-            createdAt: new Date().toISOString(),
-          });
+          await setDoc(doc(db, "users", userId, "appointments", aptId), newApt);
 
           await updateDoc(doc(db, "users", userId, "requests", requestId), {
             status: "accepted",
-            updatedAt: new Date().toISOString(),
+            updatedAt: nowIso,
           });
+
+          // Notificação do sistema
+          try {
+            const notifId = Date.now().toString();
+            await setDoc(doc(db, "users", userId, "notifications", notifId), {
+              id: notifId,
+              title: "Agendamento Confirmado",
+              message: `${request.clientName} agendado para ${request.date.split("-").reverse().join("/")} às ${request.time}`,
+              date: nowIso,
+              read: false,
+              type: "booking_confirmed",
+              appointmentId: aptId,
+            });
+          } catch {}
 
           // Optimistic local state updates
           setAppointments((prev) => {
@@ -3876,7 +4153,7 @@ const App: React.FC = () => {
           setAllRequests((prev) =>
             prev.map((r) =>
               r.id === requestId
-                ? { ...r, status: "accepted", updatedAt: new Date().toISOString() }
+                ? { ...r, status: "accepted", updatedAt: nowIso }
                 : r,
             ),
           );
@@ -4585,6 +4862,252 @@ const App: React.FC = () => {
         showToast={showToast}
       />
 
+      {/* Modal de Auditoria e Histórico Completo de Agendamento */}
+      {selectedAptForHistory && (() => {
+        const apt = selectedAptForHistory;
+        const client = clients.find((c) => c.id === apt.clientId);
+        const service = services.find((s) => s.id === apt.serviceId);
+        const historyList: AppointmentHistoryEntry[] = Array.isArray(apt.history) && apt.history.length > 0
+          ? apt.history
+          : [
+              {
+                id: "initial",
+                action: "created" as const,
+                timestamp: apt.createdAt || new Date().toISOString(),
+                actor: "Sistema",
+                details: `Agendamento cadastrado para ${apt.date.split("-").reverse().join("/")} às ${apt.time}`,
+              },
+              ...(apt.completed
+                ? [
+                    {
+                      id: "comp",
+                      action: "completed" as const,
+                      timestamp: apt.completedAt || apt.createdAt || new Date().toISOString(),
+                      actor: "Barbeiro",
+                      details: `Atendimento finalizado no valor de ${formatCurrency(apt.finalPrice)} (${apt.paid ? "Recebido" : "Débito"})`,
+                    },
+                  ]
+                : []),
+              ...(apt.status === AppointmentStatus.Rejected || (apt.status as any) === "cancelled"
+                ? [
+                    {
+                      id: "canc",
+                      action: "cancelled" as const,
+                      timestamp: apt.cancelledAt || new Date().toISOString(),
+                      actor: apt.cancelledBy || "Barbeiro",
+                      details: apt.cancelReason || "Agendamento cancelado",
+                    },
+                  ]
+                : []),
+            ];
+
+        const getActionBadge = (action: string) => {
+          switch (action) {
+            case "created":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-blue-500/20 text-blue-400 border border-blue-500/30">Criado</span>;
+            case "confirmed":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Confirmado</span>;
+            case "completed":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">Concluído</span>;
+            case "cancelled":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-rose-500/20 text-rose-400 border border-rose-500/30">Cancelado</span>;
+            case "auto_cancelled":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30">Cancelamento Automático</span>;
+            case "rescheduled":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-purple-500/20 text-purple-400 border border-purple-500/30">Reagendado</span>;
+            default:
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-slate-500/20 text-slate-300">Atualizado</span>;
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-lg bg-slate-900 border border-white/10 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5 max-h-[90vh] flex flex-col">
+              <div className="flex items-start justify-between border-b border-white/5 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-elite-cyan-500/10 border border-elite-cyan-500/20 rounded-2xl text-elite-cyan-400">
+                    <History size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase tracking-wide">
+                      Histórico e Rastreabilidade
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      {apt.clientName || client?.name || "Cliente"} • {apt.date.split("-").reverse().join("/")} às {apt.time}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedAptForHistory(null)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-all cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Resumo do Agendamento */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-950/60 p-3 rounded-2xl border border-white/5 text-center">
+                <div>
+                  <span className="text-[9px] font-bold text-slate-500 uppercase block">Serviço</span>
+                  <span className="text-xs font-black text-white truncate block">{service?.name || "Corte"}</span>
+                </div>
+                <div>
+                  <span className="text-[9px] font-bold text-slate-500 uppercase block">Valor</span>
+                  <span className="text-xs font-black text-amber-400 block">{formatCurrency(apt.finalPrice)}</span>
+                </div>
+                <div>
+                  <span className="text-[9px] font-bold text-slate-500 uppercase block">Status</span>
+                  <span className="text-xs font-black text-white uppercase block">
+                    {apt.completed ? "Concluído" : apt.status === AppointmentStatus.Rejected || (apt.status as any) === "cancelled" ? "Cancelado" : "Confirmado"}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[9px] font-bold text-slate-500 uppercase block">Pagamento</span>
+                  <span className="text-xs font-black text-emerald-400 uppercase block">
+                    {apt.paid ? "Recebido" : "Pendente"}
+                  </span>
+                </div>
+              </div>
+
+              {/* Linha do Tempo de Auditoria */}
+              <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-1">
+                <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                  Linha do Tempo de Auditoria ({historyList.length} registro{historyList.length > 1 ? "s" : ""})
+                </p>
+                <div className="relative pl-4 space-y-4 before:absolute before:left-1.5 before:top-2 before:bottom-2 before:w-0.5 before:bg-white/10">
+                  {historyList.map((entry, idx) => (
+                    <div key={entry.id || idx} className="relative group">
+                      <div className="absolute -left-4 top-1.5 w-3 h-3 rounded-full bg-elite-cyan-400 border-2 border-slate-900 ring-2 ring-elite-cyan-400/20" />
+                      <div className="bg-slate-950/70 border border-white/5 rounded-xl p-3 space-y-1">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          {getActionBadge(entry.action)}
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {new Date(entry.timestamp).toLocaleString("pt-BR")}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-200 font-medium leading-snug">
+                          {entry.details || "Operação registrada no sistema"}
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          Responsável: <span className="text-slate-300 font-bold">{entry.actor}</span>
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Ações de Gestão */}
+              <div className="flex items-center justify-between pt-3 border-t border-white/5 gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleHardDeleteAppointment(apt.id)}
+                  className="text-[10px] font-black uppercase text-rose-500/80 hover:text-rose-400 hover:underline transition-all cursor-pointer"
+                  title="Excluir permanentemente do banco de dados (ação destrutiva)"
+                >
+                  Excluir Definitivamente
+                </button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setSelectedAptForHistory(null)}
+                >
+                  Fechar
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal de Cancelamento Estruturado com Motivo e Auditoria */}
+      {cancellingApt && (() => {
+        const apt = cancellingApt;
+        const c = clients.find((cl) => cl.id === apt.clientId);
+        const quickReasons = [
+          "Imprevisto informado pelo cliente",
+          "Cliente desmarcou via WhatsApp",
+          "Falta / Não compareceu no horário",
+          "Reagendado para outra data",
+          "Barbearia em manutenção ou evento",
+        ];
+
+        return (
+          <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-md bg-slate-900 border border-rose-500/30 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between border-b border-white/5 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-rose-400">
+                    <XCircle size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase tracking-wide">
+                      Cancelar Agendamento
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      {apt.clientName || c?.name || "Cliente"} • {apt.time}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setCancellingApt(null)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-all cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-3 bg-rose-500/5 rounded-2xl border border-rose-500/10 text-xs text-rose-200/90 leading-relaxed">
+                O cancelamento libera o horário na agenda e preserva todo o histórico, dados e vínculos para auditoria permanente.
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                  Motivo do Cancelamento
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Cliente avisou que teve imprevisto..."
+                  value={cancelReasonText}
+                  onChange={(e) => setCancelReasonText(e.target.value)}
+                  className="w-full bg-slate-950 border border-white/10 focus:border-rose-400 rounded-xl px-4 py-2.5 text-white text-xs outline-none"
+                  autoFocus
+                />
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {quickReasons.map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setCancelReasonText(r)}
+                      className="text-[9px] font-bold px-2 py-1 bg-white/5 hover:bg-white/10 rounded-lg text-slate-400 hover:text-white transition-all cursor-pointer"
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-white/5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setCancellingApt(null)}
+                >
+                  Voltar
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => handleCancelAppointment(apt, cancelReasonText, false)}
+                >
+                  Confirmar Cancelamento
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Modal para Informar o Motivo da Recusa */}
       {showRejectModal && rejectingRequestId && (() => {
         const req = allRequests.find((r) => r.id === rejectingRequestId);
@@ -5113,40 +5636,63 @@ const App: React.FC = () => {
                       const service = services.find((s) => s.id === serviceId) || selectedAptService;
                       const conflict = appointments.find(
                         (a) =>
-                          a.date === date && a.time === time && !a.completed,
+                          a.date === date &&
+                          a.time === time &&
+                          !a.completed &&
+                          a.status !== AppointmentStatus.Rejected &&
+                          (a.status as any) !== "cancelled",
                       );
                       if (conflict)
                         return showToast(
-                          "Este horário já está ocupado na agenda!",
+                          `Este horário já está ocupado por ${conflict.clientName || "outro agendamento"}!`,
                           "error",
                         );
 
                       const id = Date.now().toString();
                       const userId = effectiveUserId;
                       if (!userId) return;
+
+                      const nowIso = new Date().toISOString();
+                      const historyEntries: AppointmentHistoryEntry[] = [
+                        {
+                          id: `${Date.now()}_created`,
+                          action: "created",
+                          timestamp: nowIso,
+                          actor: auth.currentUser?.displayName || "Barbeiro",
+                          details: `Agendado manualmente para ${date.split("-").reverse().join("/")} às ${time}`,
+                        },
+                      ];
+
+                      const newApt: Appointment = {
+                        id,
+                        clientId: targetClient.id,
+                        clientName: targetClient.name,
+                        clientPhone: targetClient.phone || "",
+                        serviceId: serviceId,
+                        date,
+                        time,
+                        completed: false,
+                        paid: false,
+                        finalPrice: isPricePendingOnComplete
+                          ? 0
+                          : (customPrice !== null
+                            ? customPrice
+                            : service?.price || 0),
+                        pricePending: isPricePendingOnComplete,
+                        status: AppointmentStatus.Confirmed,
+                        createdAt: nowIso,
+                        history: historyEntries,
+                      };
+
                       try {
                         await setDoc(
                           doc(db, "users", userId, "appointments", id),
-                          {
-                            id,
-                            clientId: targetClient.id,
-                            clientName: targetClient.name,
-                            clientPhone: targetClient.phone || "",
-                            serviceId: serviceId,
-                            date,
-                            time,
-                            completed: false,
-                            paid: false,
-                            finalPrice: isPricePendingOnComplete
-                              ? 0
-                              : (customPrice !== null
-                                ? customPrice
-                                : service?.price || 0),
-                            pricePending: isPricePendingOnComplete,
-                            status: "confirmed",
-                            createdAt: new Date().toISOString(),
-                          },
+                          newApt,
                         );
+
+                        // Atualização otimista imediata na UI
+                        setAppointments((prev) => [...prev, newApt]);
+
                         setAptClientSearch("");
                         setSelectedAptClient(null);
                         setSelectedAptService(null);
@@ -5809,23 +6355,94 @@ const App: React.FC = () => {
                   {/* Resumo Métrico Rápido do Dia */}
                   {(() => {
                     const dayApts = appointments.filter((a) => a.date === selectedDate);
+                    const activeApts = dayApts.filter(
+                      (a) =>
+                        !a.completed &&
+                        a.status !== AppointmentStatus.Rejected &&
+                        (a.status as any) !== "cancelled",
+                    );
                     const completed = dayApts.filter((a) => a.completed).length;
-                    const pending = dayApts.filter((a) => !a.completed).length;
-                    const totalRevenue = dayApts.reduce((acc, a) => acc + (a.finalPrice || 0), 0);
+                    const cancelled = dayApts.filter(
+                      (a) =>
+                        a.status === AppointmentStatus.Rejected ||
+                        (a.status as any) === "cancelled",
+                    ).length;
+                    const pending = activeApts.length;
+                    const totalRevenue = dayApts
+                      .filter(
+                        (a) =>
+                          a.status !== AppointmentStatus.Rejected &&
+                          (a.status as any) !== "cancelled",
+                      )
+                      .reduce((acc, a) => acc + (a.finalPrice || 0), 0);
 
                     return (
-                      <div className="grid grid-cols-3 gap-2.5 pt-3 border-t border-white/5">
-                        <div className="p-3 bg-slate-950/60 rounded-xl border border-white/5 text-center">
-                          <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Total</span>
-                          <span className="text-sm font-black text-white">{dayApts.length} cortes</span>
+                      <div className="space-y-3 pt-3 border-t border-white/5">
+                        <div className="grid grid-cols-4 gap-2 text-center">
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Total</span>
+                            <span className="text-xs sm:text-sm font-black text-white">{dayApts.length}</span>
+                          </div>
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-elite-cyan-400 uppercase tracking-wider block mb-0.5">Pendentes</span>
+                            <span className="text-xs sm:text-sm font-black text-elite-cyan-400">{pending}</span>
+                          </div>
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-wider block mb-0.5">Concluídos</span>
+                            <span className="text-xs sm:text-sm font-black text-emerald-400">{completed}</span>
+                          </div>
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-rose-400 uppercase tracking-wider block mb-0.5">Cancelados</span>
+                            <span className="text-xs sm:text-sm font-black text-rose-400">{cancelled}</span>
+                          </div>
                         </div>
-                        <div className="p-3 bg-slate-950/60 rounded-xl border border-white/5 text-center">
-                          <span className="text-[9px] font-bold text-emerald-400 uppercase tracking-wider block mb-0.5">Concluídos</span>
-                          <span className="text-sm font-black text-emerald-400">{completed}</span>
-                        </div>
-                        <div className="p-3 bg-slate-950/60 rounded-xl border border-white/5 text-center">
-                          <span className="text-[9px] font-bold text-amber-400 uppercase tracking-wider block mb-0.5">Previsto</span>
-                          <span className="text-sm font-black text-amber-400">{formatCurrency(totalRevenue)}</span>
+
+                        {/* Filtros de Status da Agenda */}
+                        <div className="flex items-center gap-1.5 p-1 bg-slate-950/80 rounded-xl border border-white/5">
+                          <button
+                            type="button"
+                            onClick={() => setAgendaFilterStatus("all")}
+                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              agendaFilterStatus === "all"
+                                ? "bg-white/20 text-white shadow-sm"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Todos ({dayApts.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAgendaFilterStatus("pending")}
+                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              agendaFilterStatus === "pending"
+                                ? "bg-elite-cyan-500 text-slate-950 shadow-md shadow-elite-cyan-500/20"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Em Aberto ({pending})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAgendaFilterStatus("completed")}
+                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              agendaFilterStatus === "completed"
+                                ? "bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Concluídos ({completed})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setAgendaFilterStatus("cancelled")}
+                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              agendaFilterStatus === "cancelled"
+                                ? "bg-rose-600 text-white shadow-md shadow-rose-600/20"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Cancelados ({cancelled})
+                          </button>
                         </div>
                       </div>
                     );
@@ -5855,18 +6472,31 @@ const App: React.FC = () => {
 
                 {/* Lista de Agendamentos */}
                 {(() => {
-                  const filteredAppointments = appointments
+                  const dayApts = appointments.filter((a) => a.date === selectedDate);
+                  const filteredAppointments = dayApts
                     .filter((a) => {
-                      const matchDate = a.date === selectedDate && !a.completed;
-                      if (!matchDate) return false;
+                      const isCancelled =
+                        a.status === AppointmentStatus.Rejected ||
+                        (a.status as any) === "cancelled";
+
+                      if (agendaFilterStatus === "pending" && (a.completed || isCancelled)) {
+                        return false;
+                      }
+                      if (agendaFilterStatus === "completed" && (!a.completed || isCancelled)) {
+                        return false;
+                      }
+                      if (agendaFilterStatus === "cancelled" && !isCancelled) {
+                        return false;
+                      }
+
                       if (!agendaSearchTerm.trim()) return true;
 
                       const c = clients.find((cl) => cl.id === a.clientId);
                       const s = services.find((sv) => sv.id === a.serviceId);
                       const term = agendaSearchTerm.toLowerCase();
-                      const clientMatch = c?.name?.toLowerCase().includes(term);
-                      const serviceMatch = s?.name?.toLowerCase().includes(term);
-                      const timeMatch = a.time?.toLowerCase().includes(term);
+                      const clientMatch = (a.clientName || c?.name || "").toLowerCase().includes(term);
+                      const serviceMatch = (s?.name || "").toLowerCase().includes(term);
+                      const timeMatch = (a.time || "").toLowerCase().includes(term);
 
                       return clientMatch || serviceMatch || timeMatch;
                     })
@@ -5877,7 +6507,15 @@ const App: React.FC = () => {
                       <div className="p-10 text-center bg-slate-900/30 rounded-2xl sm:rounded-3xl border border-dashed border-white/10 space-y-2">
                         <Calendar size={28} className="mx-auto text-slate-600" />
                         <p className="font-black uppercase tracking-widest text-[10px] text-slate-500">
-                          {agendaSearchTerm ? "Nenhum resultado para a pesquisa" : "Nenhum agendamento pendente para este dia"}
+                          {agendaSearchTerm
+                            ? "Nenhum resultado para a pesquisa"
+                            : agendaFilterStatus === "cancelled"
+                              ? "Nenhum agendamento cancelado para este dia"
+                              : agendaFilterStatus === "completed"
+                                ? "Nenhum agendamento concluído para este dia"
+                                : agendaFilterStatus === "pending"
+                                  ? "Nenhum agendamento em aberto para este dia"
+                                  : "Nenhum agendamento registrado para este dia"}
                         </p>
                       </div>
                     );
@@ -5893,10 +6531,21 @@ const App: React.FC = () => {
                       {filteredAppointments.map((apt) => {
                         const c = clients.find((cl) => cl.id === apt.clientId);
                         const s = services.find((sv) => sv.id === apt.serviceId);
+                        const isCancelled =
+                          apt.status === AppointmentStatus.Rejected ||
+                          (apt.status as any) === "cancelled";
+                        const clientPhone = apt.clientPhone || c?.phone || "";
+
                         return (
                           <div
                             key={apt.id}
-                            className="bg-slate-900/70 border border-white/[0.08] p-4 sm:p-5 rounded-2xl sm:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group shadow-lg transition-all hover:bg-slate-900 hover:border-white/20"
+                            className={`p-4 sm:p-5 rounded-2xl sm:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group shadow-lg transition-all ${
+                              isCancelled
+                                ? "bg-rose-950/20 border border-rose-500/20 opacity-90"
+                                : apt.completed
+                                  ? "bg-emerald-950/20 border border-emerald-500/20"
+                                  : "bg-slate-900/70 border border-white/[0.08] hover:bg-slate-900 hover:border-white/20"
+                            }`}
                           >
                             <div className="flex items-center gap-3.5 min-w-0">
                               <span className="text-2xl sm:text-3xl font-black text-white font-mono shrink-0 tracking-tight">
@@ -5917,9 +6566,21 @@ const App: React.FC = () => {
                                   )}
                                 </div>
                                 <div className="min-w-0">
-                                  <p className="font-black text-sm uppercase text-white truncate leading-tight">
-                                    {apt.clientName || c?.name || "Cliente"}
-                                  </p>
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-black text-sm uppercase text-white truncate leading-tight">
+                                      {apt.clientName || c?.name || "Cliente"}
+                                    </p>
+                                    {isCancelled && (
+                                      <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                        Cancelado
+                                      </span>
+                                    )}
+                                    {apt.completed && (
+                                      <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                        Concluído
+                                      </span>
+                                    )}
+                                  </div>
                                   <div className="flex items-center gap-2 flex-wrap mt-1">
                                     <span className="text-[10px] font-black text-elite-cyan-400 uppercase truncate">
                                       {s?.name || "Corte"}
@@ -5932,6 +6593,11 @@ const App: React.FC = () => {
                                     ) : (
                                       <span className="text-[11px] font-black text-amber-400 font-mono">
                                         {formatCurrency(apt.finalPrice)}
+                                      </span>
+                                    )}
+                                    {isCancelled && apt.cancelReason && (
+                                      <span className="text-[10px] text-rose-300/80 truncate max-w-[200px]" title={apt.cancelReason}>
+                                        • {apt.cancelReason}
                                       </span>
                                     )}
                                   </div>
@@ -6019,17 +6685,81 @@ const App: React.FC = () => {
                                     />
                                   </div>
                                 </div>
+                              ) : isCancelled ? (
+                                <div className="flex items-center gap-1.5">
+                                  <IconButton
+                                    icon={<History size={15} />}
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setSelectedAptForHistory(apt)}
+                                    title="Ver Histórico de Alterações"
+                                  />
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={async () => {
+                                      if (!auth.currentUser) return;
+                                      const userId = effectiveUserId;
+                                      if (!userId) return;
+                                      const nowIso = new Date().toISOString();
+                                      const historyEntry: AppointmentHistoryEntry = {
+                                        id: `${Date.now()}_reactivated`,
+                                        action: "confirmed",
+                                        timestamp: nowIso,
+                                        actor: auth.currentUser.displayName || "Barbeiro",
+                                        details: "Agendamento reativado na agenda",
+                                      };
+                                      const updatedHistory = [
+                                        ...(Array.isArray(apt.history) ? apt.history : []),
+                                        historyEntry,
+                                      ];
+                                      setAppointments((prev) =>
+                                        prev.map((a) =>
+                                          a.id === apt.id
+                                            ? {
+                                                ...a,
+                                                status: AppointmentStatus.Confirmed,
+                                                cancelledAt: undefined,
+                                                cancelReason: undefined,
+                                                cancelledBy: undefined,
+                                                history: updatedHistory,
+                                              }
+                                            : a,
+                                        ),
+                                      );
+                                      try {
+                                        await updateDoc(doc(db, "users", userId, "appointments", apt.id), {
+                                          status: AppointmentStatus.Confirmed,
+                                          cancelledAt: null,
+                                          cancelReason: null,
+                                          cancelledBy: null,
+                                          history: updatedHistory,
+                                        });
+                                        showToast("Agendamento reativado com sucesso!", "success");
+                                      } catch (err) {
+                                        handleFirestoreError(
+                                          err,
+                                          OperationType.UPDATE,
+                                          `users/${userId}/appointments/${apt.id}`,
+                                        );
+                                      }
+                                    }}
+                                  >
+                                    REATIVAR
+                                  </Button>
+                                </div>
                               ) : (
                                 <div className="flex items-center gap-1.5">
-                                  {c?.phone && (
+                                  {clientPhone && (
                                     <IconButton
                                       icon={<MessageSquare size={15} />}
                                       variant="whatsapp"
                                       size="sm"
                                       onClick={() => {
-                                        const cleanPhone = c.phone.replace(/\D/g, "");
+                                        const cleanPhone = clientPhone.replace(/\D/g, "");
                                         const fullPhone = cleanPhone.startsWith("55") ? cleanPhone : `55${cleanPhone}`;
-                                        const msg = `Olá ${c.name}! Confirmando seu horário na ${session?.shopName || "Barbearia"} para hoje às ${apt.time} (${s?.name || "Corte"}). Te aguardamos!`;
+                                        const clientName = apt.clientName || c?.name || "Cliente";
+                                        const msg = `Olá ${clientName}! Confirmando seu horário na ${session?.shopName || "Barbearia"} para hoje às ${apt.time} (${s?.name || "Corte"}). Te aguardamos!`;
                                         window.open(`https://wa.me/${fullPhone}?text=${encodeURIComponent(msg)}`, "_blank");
                                       }}
                                       title="WhatsApp do Cliente"
@@ -6047,6 +6777,13 @@ const App: React.FC = () => {
                                     disabled={isSendingReminder === apt.id}
                                     title="Enviar Lembrete Automático"
                                   />
+                                  <IconButton
+                                    icon={<History size={15} />}
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setSelectedAptForHistory(apt)}
+                                    title="Ver Histórico de Alterações"
+                                  />
                                   <Button
                                     variant="primary"
                                     size="sm"
@@ -6055,32 +6792,14 @@ const App: React.FC = () => {
                                     FINALIZAR
                                   </Button>
                                   <IconButton
-                                    icon={<Trash2 size={15} />}
+                                    icon={<XCircle size={15} className="text-rose-400 hover:text-rose-300" />}
                                     variant="ghost"
                                     size="sm"
-                                    onClick={async () => {
-                                      const userId = effectiveUserId;
-                                      if (!userId) return;
-                                      try {
-                                        await deleteDoc(
-                                          doc(
-                                            db,
-                                            "users",
-                                            userId,
-                                            "appointments",
-                                            apt.id,
-                                          ),
-                                        );
-                                        showToast("Agendamento removido com sucesso!");
-                                      } catch (err) {
-                                        handleFirestoreError(
-                                          err,
-                                          OperationType.DELETE,
-                                          `users/${userId}/appointments/${apt.id}`,
-                                        );
-                                      }
+                                    onClick={() => {
+                                      setCancellingApt(apt);
+                                      setCancelReasonText("");
                                     }}
-                                    title="Remover agendamento"
+                                    title="Cancelar Agendamento (Preserva Histórico)"
                                   />
                                 </div>
                               )}
@@ -6375,136 +7094,239 @@ const App: React.FC = () => {
             </div>
           )}
 
-          {activeTab === Tab.Finance && (
-            <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-500">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 sm:gap-6">
-                <StatCard
-                  title="Receita Mensal"
-                  value={formatCurrency(stats.monthlyRev)}
-                  subtitle="Faturamento total deste mês"
-                  icon={<TrendingUp size={20} />}
-                  color="emerald"
-                />
-                <StatCard
-                  title="Pagamentos Pendentes"
-                  value={formatCurrency(
-                    appointments
-                      .filter((a) => a.completed && !a.paid)
-                      .reduce((acc, a) => acc + Number(a.finalPrice || 0), 0),
-                  )}
-                  subtitle="Aguardando liquidação"
-                  icon={<Clock size={20} />}
-                  color="amber"
-                />
-                <StatCard
-                  title="Total de Ajustes"
-                  value={formatCurrency(
-                    adjustments.reduce((acc, a) => acc + Number(a.amount || 0), 0),
-                  )}
-                  subtitle="Balanço de lançamentos extras"
-                  icon={<DollarSign size={20} />}
-                  color="slate"
-                />
-              </div>
+          {activeTab === Tab.Finance && (() => {
+            const paidAppointments = appointments.filter((a) => a.completed && a.paid);
+            const pendingAppointments = appointments.filter((a) => a.completed && !a.paid);
+            const allTimeCutsRev = paidAppointments.reduce((acc, a) => acc + Number(a.finalPrice || 0), 0);
+            const allTimeAdjRev = adjustments.reduce((acc, a) => acc + Number(a.amount || 0), 0);
+            const allTimeGrandTotal = allTimeCutsRev + allTimeAdjRev;
 
-              <Card 
-                title="Detalhamento Financeiro" 
-                subtitle="Consulte registros de pagamentos pendentes, ganhos consolidados e ajustes"
-                icon={<Receipt size={18} />}
-              >
-                <div className="flex flex-wrap sm:flex-nowrap gap-1.5 sm:gap-2 mb-6 sm:mb-8 bg-slate-950 p-1.5 rounded-xl w-full sm:w-fit shadow-inner border border-white/5">
-                  {["pending", "paid", "adjustments"].map((t) => (
-                    <button
-                      key={t}
-                      onClick={() => setFinanceSubTab(t as any)}
-                      className={`flex-1 sm:flex-initial px-5 sm:px-8 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[40px] flex items-center justify-center cursor-pointer ${financeSubTab === t ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20" : "text-slate-400 hover:text-white hover:bg-white/5"}`}
-                    >
-                      {t === "pending"
-                        ? "Pendentes"
-                        : t === "paid"
-                          ? "Ganhos"
-                          : "Ajustes"}
-                    </button>
-                  ))}
+            const filteredPaidApts = paidAppointments.filter((apt) => {
+              if (financeMonthFilter !== "all" && !apt.date.startsWith(financeMonthFilter)) {
+                return false;
+              }
+              if (!financeSearchTerm.trim()) return true;
+              const c = clients.find((cl) => cl.id === apt.clientId);
+              const s = services.find((sv) => sv.id === apt.serviceId);
+              const term = financeSearchTerm.toLowerCase();
+              const nameMatch = (apt.clientName || c?.name || "").toLowerCase().includes(term);
+              const serviceMatch = (s?.name || "").toLowerCase().includes(term);
+              const dateMatch = apt.date.includes(term);
+              return nameMatch || serviceMatch || dateMatch;
+            });
+
+            const filteredAdjustments = adjustments.filter((adj) => {
+              if (financeMonthFilter !== "all" && !adj.date.startsWith(financeMonthFilter)) {
+                return false;
+              }
+              if (!financeSearchTerm.trim()) return true;
+              const term = financeSearchTerm.toLowerCase();
+              return adj.reason.toLowerCase().includes(term) || adj.date.includes(term);
+            });
+
+            const filteredPendingApts = pendingAppointments.filter((apt) => {
+              if (!financeSearchTerm.trim()) return true;
+              const c = clients.find((cl) => cl.id === apt.clientId);
+              const term = financeSearchTerm.toLowerCase();
+              return (apt.clientName || c?.name || "").toLowerCase().includes(term) || apt.date.includes(term);
+            });
+
+            return (
+              <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-500">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+                  <StatCard
+                    title="Receita Mensal"
+                    value={formatCurrency(stats.monthlyRev)}
+                    subtitle="Faturamento total deste mês"
+                    icon={<TrendingUp size={20} />}
+                    color="emerald"
+                  />
+                  <StatCard
+                    title="Histórico Geral Acumulado"
+                    value={formatCurrency(allTimeGrandTotal)}
+                    subtitle={`${paidAppointments.length} cortes + ${adjustments.length} lançamentos`}
+                    icon={<Award size={20} />}
+                    color="cyan"
+                  />
+                  <StatCard
+                    title="Total de Ajustes"
+                    value={formatCurrency(allTimeAdjRev)}
+                    subtitle={`${adjustments.length} lançamentos no livro caixa`}
+                    icon={<DollarSign size={20} />}
+                    color="slate"
+                  />
+                  <StatCard
+                    title="Pagamentos Pendentes"
+                    value={formatCurrency(
+                      pendingAppointments.reduce((acc, a) => acc + Number(a.finalPrice || 0), 0),
+                    )}
+                    subtitle={`${pendingAppointments.length} aguardando liquidação`}
+                    icon={<Clock size={20} />}
+                    color="amber"
+                  />
                 </div>
 
-                <div className="space-y-3.5">
-                  {financeSubTab === "adjustments" ? (
-                    adjustments.map((adj) => (
-                      <div
-                        key={adj.id}
-                        className="p-4 sm:p-5 bg-slate-950/60 border border-white/[0.08] rounded-xl sm:rounded-2xl flex flex-col sm:flex-row justify-between sm:items-center gap-3 group shadow-md hover:border-white/15 transition-all"
+                <Card 
+                  title="Histórico Financeiro & Extrato" 
+                  subtitle="Consulte registros de ganhos consolidados, livro de caixa de ajustes e pagamentos"
+                  icon={<Receipt size={18} />}
+                >
+                  {/* Controles de Subabas e Filtros */}
+                  <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 mb-6">
+                    <div className="flex flex-wrap sm:flex-nowrap gap-1.5 sm:gap-2 bg-slate-950 p-1.5 rounded-xl shadow-inner border border-white/5">
+                      <button
+                        onClick={() => setFinanceSubTab("paid")}
+                        className={`flex-1 sm:flex-initial px-4 sm:px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[40px] flex items-center justify-center gap-2 cursor-pointer ${
+                          financeSubTab === "paid"
+                            ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20"
+                            : "text-slate-400 hover:text-white hover:bg-white/5"
+                        }`}
                       >
-                        <div className="flex items-center gap-3.5">
-                          <div
-                            className={`h-11 w-11 rounded-xl flex items-center justify-center shrink-0 border ${adj.amount >= 0 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-rose-500/10 text-rose-400 border-rose-500/20"}`}
+                        <span>Ganhos em Cortes</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
+                          {paidAppointments.length}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setFinanceSubTab("adjustments")}
+                        className={`flex-1 sm:flex-initial px-4 sm:px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[40px] flex items-center justify-center gap-2 cursor-pointer ${
+                          financeSubTab === "adjustments"
+                            ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20"
+                            : "text-slate-400 hover:text-white hover:bg-white/5"
+                        }`}
+                      >
+                        <span>Ajustes & Lançamentos</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
+                          {adjustments.length}
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => setFinanceSubTab("pending")}
+                        className={`flex-1 sm:flex-initial px-4 sm:px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[40px] flex items-center justify-center gap-2 cursor-pointer ${
+                          financeSubTab === "pending"
+                            ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20"
+                            : "text-slate-400 hover:text-white hover:bg-white/5"
+                        }`}
+                      >
+                        <span>Pendentes</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
+                          {pendingAppointments.length}
+                        </span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <select
+                        value={financeMonthFilter}
+                        onChange={(e) => setFinanceMonthFilter(e.target.value)}
+                        className="bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-bold uppercase outline-none focus:border-elite-red-500 cursor-pointer"
+                      >
+                        <option value="all">Todos os Períodos (Histórico Completo)</option>
+                        <option value="2026-10">Outubro 2026</option>
+                        <option value="2026-09">Setembro 2026 (Atual)</option>
+                        <option value="2026-08">Agosto 2026</option>
+                        <option value="2026-07">Julho 2026</option>
+                        <option value="2026-06">Junho 2026</option>
+                        <option value="2026-05">Maio 2026</option>
+                      </select>
+                      <div className="relative min-w-[200px] flex-1 sm:flex-initial">
+                        <input
+                          type="text"
+                          placeholder="Buscar no histórico..."
+                          value={financeSearchTerm}
+                          onChange={(e) => setFinanceSearchTerm(e.target.value)}
+                          className="w-full bg-slate-950 border border-white/10 rounded-xl px-3 py-2 pl-8 text-white text-xs font-bold outline-none focus:border-elite-red-500 placeholder-slate-500"
+                        />
+                        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+                        {financeSearchTerm && (
+                          <button
+                            onClick={() => setFinanceSearchTerm("")}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
                           >
-                            {adj.amount >= 0 ? (
-                              <ArrowUpCircle size={20} />
-                            ) : (
-                              <ArrowDownCircle size={20} />
-                            )}
-                          </div>
-                          <div>
-                            <p className="font-black text-white uppercase text-xs sm:text-sm italic mb-0.5">
-                              {adj.reason}
-                            </p>
-                            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                              {adj.date}
-                            </p>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto">
-                          <span
-                            className={`text-lg sm:text-xl font-black ${adj.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}
-                          >
-                            {adj.amount >= 0 ? "+" : ""}
-                            {formatCurrency(adj.amount)}
-                          </span>
-                          <IconButton
-                            icon={<Trash2 size={15} />}
-                            variant="ghost"
-                            size="sm"
-                            onClick={async () => {
-                              const userId = effectiveUserId;
-                              if (!userId) return;
-                              try {
-                                await deleteDoc(
-                                  doc(
-                                    db,
-                                    "users",
-                                    userId,
-                                    "adjustments",
-                                    adj.id,
-                                  ),
-                                );
-                                showToast("Ajuste removido.");
-                              } catch (err) {
-                                handleFirestoreError(
-                                  err,
-                                  OperationType.DELETE,
-                                  `users/${userId}/adjustments/${adj.id}`,
-                                );
-                              }
-                            }}
-                            title="Remover ajuste"
-                          />
-                        </div>
+                            <X size={12} />
+                          </button>
+                        )}
                       </div>
-                    ))
-                  ) : appointments.filter(
-                      (a) =>
-                        a.completed &&
-                        (financeSubTab === "paid" ? a.paid : !a.paid),
-                    ).length > 0 ? (
-                    appointments
-                      .filter(
-                        (a) =>
-                          a.completed &&
-                          (financeSubTab === "paid" ? a.paid : !a.paid),
+                    </div>
+                  </div>
+
+                  <div className="space-y-3.5">
+                    {financeSubTab === "adjustments" ? (
+                      filteredAdjustments.length > 0 ? (
+                        filteredAdjustments.map((adj) => (
+                          <div
+                            key={adj.id}
+                            className="p-4 sm:p-5 bg-slate-950/60 border border-white/[0.08] rounded-xl sm:rounded-2xl flex flex-col sm:flex-row justify-between sm:items-center gap-3 group shadow-md hover:border-white/15 transition-all"
+                          >
+                            <div className="flex items-center gap-3.5">
+                              <div
+                                className={`h-11 w-11 rounded-xl flex items-center justify-center shrink-0 border ${adj.amount >= 0 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-rose-500/10 text-rose-400 border-rose-500/20"}`}
+                              >
+                                {adj.amount >= 0 ? (
+                                  <ArrowUpCircle size={20} />
+                                ) : (
+                                  <ArrowDownCircle size={20} />
+                                )}
+                              </div>
+                              <div>
+                                <p className="font-black text-white uppercase text-xs sm:text-sm italic mb-0.5">
+                                  {adj.reason}
+                                </p>
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                  {adj.date}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto">
+                              <span
+                                className={`text-lg sm:text-xl font-black ${adj.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}
+                              >
+                                {adj.amount >= 0 ? "+" : ""}
+                                {formatCurrency(adj.amount)}
+                              </span>
+                              <IconButton
+                                icon={<Trash2 size={15} />}
+                                variant="ghost"
+                                size="sm"
+                                onClick={async () => {
+                                  const userId = effectiveUserId;
+                                  if (!userId) return;
+                                  try {
+                                    await deleteDoc(
+                                      doc(
+                                        db,
+                                        "users",
+                                        userId,
+                                        "adjustments",
+                                        adj.id,
+                                      ),
+                                    );
+                                    showToast("Ajuste removido.");
+                                  } catch (err) {
+                                    handleFirestoreError(
+                                      err,
+                                      OperationType.DELETE,
+                                      `users/${userId}/adjustments/${adj.id}`,
+                                    );
+                                  }
+                                }}
+                                title="Remover ajuste"
+                              />
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="p-16 text-center opacity-40">
+                          <DollarSign size={40} className="mx-auto mb-3 text-slate-600" />
+                          <p className="font-black uppercase text-xs tracking-wider text-slate-400">
+                            Nenhum lançamento de ajuste encontrado
+                          </p>
+                        </div>
                       )
-                      .map((apt) => {
+                    ) : (financeSubTab === "paid" ? filteredPaidApts : filteredPendingApts).length > 0 ? (
+                      (financeSubTab === "paid" ? filteredPaidApts : filteredPendingApts).map((apt) => {
                         const c = clients.find((cl) => cl.id === apt.clientId);
+                        const clientDisplayName = apt.clientName || c?.name || "Cliente Agendado";
                         return (
                           <div
                             key={apt.id}
@@ -6528,15 +7350,15 @@ const App: React.FC = () => {
                               </div>
                               <div className="min-w-0">
                                 <p className="font-black text-white uppercase text-xs sm:text-sm italic leading-tight mb-1 truncate">
-                                  {c?.name || "Cliente Removido"}
+                                  {clientDisplayName}
                                 </p>
                                 <div className="flex flex-wrap items-center gap-2">
                                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                                    {apt.date} •{" "}
+                                    {apt.date} {apt.time ? `• ${apt.time}` : ""} •{" "}
                                     {
                                       services.find(
                                         (s) => s.id === apt.serviceId,
-                                      )?.name
+                                      )?.name || "Corte"
                                     }
                                   </p>
                                   {apt.paid ? (
@@ -6558,7 +7380,7 @@ const App: React.FC = () => {
                               </div>
                             </div>
                             <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
-                              <span className="text-lg sm:text-xl font-black text-white italic">
+                              <span className="text-lg sm:text-xl font-black text-white italic font-mono">
                                 {formatCurrency(apt.finalPrice)}
                               </span>
                               {!apt.paid && (
@@ -6576,21 +7398,22 @@ const App: React.FC = () => {
                           </div>
                         );
                       })
-                  ) : (
-                    <div className="p-16 text-center opacity-40">
-                      <Receipt
-                        size={40}
-                        className="mx-auto mb-3 text-slate-600"
-                      />
-                      <p className="font-black uppercase text-xs tracking-wider text-slate-400">
-                        Nenhum registro encontrado nesta categoria
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </Card>
-            </div>
-          )}
+                    ) : (
+                      <div className="p-16 text-center opacity-40">
+                        <Receipt
+                          size={40}
+                          className="mx-auto mb-3 text-slate-600"
+                        />
+                        <p className="font-black uppercase text-xs tracking-wider text-slate-400">
+                          Nenhum registro encontrado nesta categoria
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              </div>
+            );
+          })()}
 
           {activeTab === Tab.Dashboard && (
             <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-500">
@@ -8557,6 +9380,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
     const requestId = Date.now().toString();
     try {
+      const nowIso = new Date().toISOString();
       await setDoc(doc(db, "users", effectiveBarberId, "requests", requestId), {
         id: requestId,
         serviceId: selectedService.id,
@@ -8565,8 +9389,24 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
         clientName: currentName,
         clientPhone: currentPhone,
         status: "pending",
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso,
       });
+
+      // Notificação imediata para a barbearia
+      try {
+        const notifId = Date.now().toString();
+        await setDoc(doc(db, "users", effectiveBarberId, "notifications", notifId), {
+          id: notifId,
+          title: "Nova Solicitação de Agendamento",
+          message: `${currentName} solicitou agendamento para ${bookingDate.split("-").reverse().join("/")} às ${bookingTime} (${selectedService.name}).`,
+          date: nowIso,
+          read: false,
+          type: "new_request",
+          requestId: requestId,
+        });
+      } catch (notifErr) {
+        console.warn("Aviso ao gerar notificação de nova solicitação:", notifErr);
+      }
 
       localStorage.setItem("bk_client_name", currentName);
       localStorage.setItem("bk_client_phone", currentPhone);

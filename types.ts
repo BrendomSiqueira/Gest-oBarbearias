@@ -45,6 +45,16 @@ export enum AppointmentStatus {
   Rejected = 'rejected'
 }
 
+export interface AppointmentHistoryEntry {
+  id: string;
+  action: 'created' | 'confirmed' | 'rescheduled' | 'completed' | 'cancelled' | 'auto_cancelled' | 'price_updated' | 'edited';
+  timestamp: string;
+  actor: string;
+  details?: string;
+  previousValue?: string;
+  newValue?: string;
+}
+
 export interface Appointment {
   id: string;
   clientId: string;
@@ -56,9 +66,15 @@ export interface Appointment {
   finalPrice: number; 
   pricePending?: boolean;
   notes?: string;
-  status: AppointmentStatus;
-  clientName?: string; // For pending requests from non-registered clients
-  clientPhone?: string; // For pending requests from non-registered clients
+  status: AppointmentStatus | 'cancelled';
+  clientName?: string; // For pending requests or direct display
+  clientPhone?: string; // For pending requests or direct display
+  createdAt?: string;
+  completedAt?: string;
+  cancelledAt?: string;
+  cancelledBy?: string;
+  cancelReason?: string;
+  history?: AppointmentHistoryEntry[];
 }
 
 export interface BusinessHours {
@@ -82,6 +98,8 @@ export interface UserSession {
   monthlyGoal?: number;
   businessHours?: BusinessHours;
   unavailableSlots?: UnavailableSlot[];
+  autoCancelExpired?: boolean;
+  autoCancelMinutes?: number;
 }
 
 export enum Tab {

@@ -120,7 +120,12 @@ service cloud.firestore {
              (!('clientPhone' in data) || (data.clientPhone is string && data.clientPhone.size() <= 30)) &&
              (!('notes' in data) || (data.notes is string && data.notes.size() <= 500)) &&
              (!('createdAt' in data) || isValidDateString(data.createdAt)) &&
-             data.status in ['confirmed', 'pending', 'rejected'];
+             (!('cancelledAt' in data) || isValidDateString(data.cancelledAt)) &&
+             (!('cancelReason' in data) || (data.cancelReason is string && data.cancelReason.size() <= 500)) &&
+             (!('cancelledBy' in data) || (data.cancelledBy is string && data.cancelledBy.size() <= 100)) &&
+             (!('completedAt' in data) || isValidDateString(data.completedAt)) &&
+             (!('history' in data) || (data.history is list && data.history.size() <= 100)) &&
+             data.status in ['confirmed', 'pending', 'rejected', 'cancelled'];
     }
 
     function isValidRequest(data) {
@@ -132,7 +137,9 @@ service cloud.firestore {
              data.clientName is string && data.clientName.size() > 0 && data.clientName.size() <= 100 &&
              data.clientPhone is string && data.clientPhone.size() > 0 && data.clientPhone.size() <= 30 &&
              isValidDateString(data.createdAt) &&
-             data.status in ['pending', 'accepted', 'rejected'];
+             (!('rejectReason' in data) || (data.rejectReason is string && data.rejectReason.size() <= 500)) &&
+             (!('autoCancelled' in data) || (data.autoCancelled is bool)) &&
+             data.status in ['pending', 'accepted', 'rejected', 'cancelled'];
     }
 
     function isValidMaterial(data) {
@@ -176,7 +183,7 @@ service cloud.firestore {
              data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
              data.message is string && data.message.size() > 0 && data.message.size() <= 2000 &&
              isValidDateString(data.date) &&
-             (!('type' in data) || data.type in ['info', 'update', 'alert']) &&
+             (!('type' in data) || (data.type is string && data.type.size() <= 50)) &&
              (!('read' in data) || data.read is bool);
     }
 
