@@ -245,6 +245,22 @@ export const getEffectiveBarberId = (user: any): string => {
   return user.uid || "matheus_farias";
 };
 
+export const getLocalDateString = (d: Date = new Date()): string => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+export const normalizePhone = (p?: string | null): string => {
+  if (!p) return "";
+  let digits = p.replace(/\D/g, "");
+  if (digits.startsWith("55") && (digits.length === 12 || digits.length === 13)) {
+    digits = digits.slice(2);
+  }
+  return digits;
+};
+
 export const isSlotOrDateDayOff = (
   unavailableSlots: { date: string; time?: string; allDay?: boolean }[] | undefined,
   targetDate: string,
@@ -921,7 +937,11 @@ const App: React.FC = () => {
   const [drinkFormStock, setDrinkFormStock] = useState("");
   const [sales, setSales] = useState<Sale[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [appointmentRequests, setAppointmentRequests] = useState<any[]>([]);
+  const [allRequests, setAllRequests] = useState<any[]>([]);
+  const appointmentRequests = useMemo(
+    () => allRequests.filter((r) => r.status === "pending"),
+    [allRequests],
+  );
   const [adjustments, setAdjustments] = useState<BalanceAdjustment[]>([]);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [allUsers, setAllUsers] = useState<any[]>([]);
@@ -938,9 +958,7 @@ const App: React.FC = () => {
   const [rejectReasonText, setRejectReasonText] = useState("");
   const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
 
-  const [selectedDate, setSelectedDate] = useState(
-    new Date().toISOString().split("T")[0],
-  );
+  const [selectedDate, setSelectedDate] = useState(() => getLocalDateString());
   const [reportMonth, setReportMonth] = useState(
     new Date().toISOString().substring(0, 7),
   );
@@ -1365,14 +1383,13 @@ const App: React.FC = () => {
     const unsubRequests = onSnapshot(
       collection(db, "users", userId, "requests"),
       (snap) => {
-        setAppointmentRequests(
+        setAllRequests(
           snap.docs
             .map((d) => d.data())
-            .filter((r) => r.status === "pending")
             .sort(
               (a, b) =>
-                new Date(b.createdAt).getTime() -
-                new Date(a.createdAt).getTime(),
+                new Date(b.createdAt || 0).getTime() -
+                new Date(a.createdAt || 0).getTime(),
             ),
         );
       },
@@ -1399,7 +1416,7 @@ const App: React.FC = () => {
   }, [isAuthenticated, auth.currentUser, effectiveUserId]);
 
   const stats = useMemo(() => {
-    const today = new Date().toISOString().split("T")[0];
+    const today = getLocalDateString();
     const monthPrefix = today.substring(0, 7);
     const yearPrefix = today.substring(0, 4);
 
@@ -2293,8 +2310,8 @@ const App: React.FC = () => {
       )}
     </div>
   );
-  const [selectedBookingDate, setSelectedBookingDate] = useState(
-    new Date().toISOString().split("T")[0],
+  const [selectedBookingDate, setSelectedBookingDate] = useState(() =>
+    getLocalDateString(),
   );
 
   const generateTimeSlots = (
@@ -2325,7 +2342,7 @@ const App: React.FC = () => {
     const intEndMin = hasInt ? timeToMinutes(intervalEnd) : -1;
 
     const now = new Date();
-    const todayStr = now.toISOString().split("T")[0];
+    const todayStr = getLocalDateString(now);
     const nowMin = now.getHours() * 60 + now.getMinutes() + 30; // 30 min minimum notice for today
 
     for (let currentMin = openMin; currentMin < closeMin; currentMin += 30) {
@@ -2574,23 +2591,16 @@ const App: React.FC = () => {
     };
 
     const setToday = () => {
-      const now = new Date();
-      const yyyy = now.getFullYear();
-      const mm = String(now.getMonth() + 1).padStart(2, "0");
-      const dd = String(now.getDate()).padStart(2, "0");
-      setSelectedBookingDate(`${yyyy}-${mm}-${dd}`);
+      setSelectedBookingDate(getLocalDateString());
     };
 
     const setTomorrow = () => {
       const date = new Date();
       date.setDate(date.getDate() + 1);
-      const yyyy = date.getFullYear();
-      const mm = String(date.getMonth() + 1).padStart(2, "0");
-      const dd = String(date.getDate()).padStart(2, "0");
-      setSelectedBookingDate(`${yyyy}-${mm}-${dd}`);
+      setSelectedBookingDate(getLocalDateString(date));
     };
 
-    const todayDateStr = new Date().toISOString().split("T")[0];
+    const todayDateStr = getLocalDateString();
     const todayAppointments = appointments
       .filter((a) => a.date === todayDateStr && a.status !== AppointmentStatus.Rejected)
       .sort((a, b) => a.time.localeCompare(b.time));
@@ -2605,7 +2615,7 @@ const App: React.FC = () => {
       formattedDateTitle = selectedBookingDate;
     }
 
-    const filteredHistory = appointmentRequests
+    const filteredHistory = allRequests
       .filter((r) => r.status !== "pending")
       .filter((r) => (bookingHistoryFilter === "all" ? true : r.status === bookingHistoryFilter));
 
@@ -2834,7 +2844,7 @@ const App: React.FC = () => {
                           </div>
                           <div>
                             <p className="font-bold text-white text-xs sm:text-sm">
-                              {client?.name || "Cliente VIP"}
+                              {apt.clientName || client?.name || "Cliente VIP"}
                             </p>
                             <div className="flex items-center gap-2 text-[10px] text-slate-400">
                               <span>{service?.name || "Serviço"}</span>
@@ -3789,15 +3799,38 @@ const App: React.FC = () => {
     action: "accept" | "reject",
   ) => {
     const userId = effectiveUserId;
-    const request = appointmentRequests.find((r) => r.id === requestId);
+    const request = allRequests.find((r) => r.id === requestId);
     if (!request) return;
 
     setProcessingRequestId(requestId);
 
     try {
       if (action === "accept") {
-        const cleanReqPhone = request.clientPhone ? request.clientPhone.replace(/\D/g, "") : "";
-        let clientId = clients.find((c) => c.phone && c.phone.replace(/\D/g, "") === cleanReqPhone)?.id;
+        // Prevent double booking conflict if already occupied by another confirmed appointment
+        const conflictingApt = appointments.find(
+          (a) =>
+            a.date === request.date &&
+            a.time === request.time &&
+            a.status !== AppointmentStatus.Rejected,
+        );
+        if (conflictingApt) {
+          showToast(
+            `Atenção: Horário ${request.time} já está ocupado por ${conflictingApt.clientName || "outro agendamento"}!`,
+            "error",
+          );
+          setProcessingRequestId(null);
+          return;
+        }
+
+        const cleanReqPhone = normalizePhone(request.clientPhone);
+        const cleanReqName = (request.clientName || "").trim().toLowerCase();
+
+        let clientId = clients.find((c) => {
+          const cPhone = normalizePhone(c.phone);
+          if (cleanReqPhone && cPhone && cleanReqPhone === cPhone) return true;
+          if (cleanReqName && c.name.trim().toLowerCase() === cleanReqName) return true;
+          return false;
+        })?.id;
         
         if (!clientId) {
           clientId = await saveNewClient(
@@ -3808,9 +3841,9 @@ const App: React.FC = () => {
         }
 
         if (clientId) {
-          const aptId = Date.now().toString();
+          const aptId = request.id || Date.now().toString();
           const service = services.find((s) => s.id === request.serviceId);
-          await setDoc(doc(db, "users", userId, "appointments", aptId), {
+          const newApt: Appointment = {
             id: aptId,
             clientId,
             clientName: request.clientName,
@@ -3821,7 +3854,11 @@ const App: React.FC = () => {
             completed: false,
             paid: false,
             finalPrice: service?.price || 0,
-            status: "confirmed",
+            status: AppointmentStatus.Confirmed,
+          };
+
+          await setDoc(doc(db, "users", userId, "appointments", aptId), {
+            ...newApt,
             createdAt: new Date().toISOString(),
           });
 
@@ -3830,14 +3867,27 @@ const App: React.FC = () => {
             updatedAt: new Date().toISOString(),
           });
 
-          // Optimistic local state update
-          setAppointmentRequests((prev) => prev.filter((r) => r.id !== requestId));
+          // Optimistic local state updates
+          setAppointments((prev) => {
+            const exists = prev.some((a) => a.id === aptId);
+            return exists ? prev.map((a) => (a.id === aptId ? newApt : a)) : [...prev, newApt];
+          });
+
+          setAllRequests((prev) =>
+            prev.map((r) =>
+              r.id === requestId
+                ? { ...r, status: "accepted", updatedAt: new Date().toISOString() }
+                : r,
+            ),
+          );
 
           showToast("Agendamento confirmado com sucesso!", "success");
 
           // Send WhatsApp notification
           const msg = `Olá ${request.clientName}! Seu agendamento para ${service?.name || "Corte"} no dia ${request.date.split("-").reverse().join("/")} às ${request.time} foi CONFIRMADO com sucesso! Te esperamos na barbearia.`;
           sendWhatsAppNotification(request.clientPhone, msg);
+        } else {
+          showToast("Não foi possível vincular o cliente ao agendamento.", "error");
         }
       } else {
         const reason =
@@ -3852,7 +3902,13 @@ const App: React.FC = () => {
         });
 
         // Optimistic local state update
-        setAppointmentRequests((prev) => prev.filter((r) => r.id !== requestId));
+        setAllRequests((prev) =>
+          prev.map((r) =>
+            r.id === requestId
+              ? { ...r, status: "rejected", rejectReason: reason, updatedAt: new Date().toISOString() }
+              : r,
+          ),
+        );
 
         sendWhatsAppNotification(request.clientPhone, msg);
         showToast("Solicitação recusada com sucesso.", "info");
@@ -3872,7 +3928,7 @@ const App: React.FC = () => {
 
   const handleRejectWithReason = async (requestId: string, reasonText: string) => {
     const userId = effectiveUserId;
-    const request = appointmentRequests.find((r) => r.id === requestId);
+    const request = allRequests.find((r) => r.id === requestId);
     if (!request) return;
 
     setProcessingRequestId(requestId);
@@ -3890,7 +3946,13 @@ const App: React.FC = () => {
       });
 
       // Optimistic local state update
-      setAppointmentRequests((prev) => prev.filter((r) => r.id !== requestId));
+      setAllRequests((prev) =>
+        prev.map((r) =>
+          r.id === requestId
+            ? { ...r, status: "rejected", rejectReason: finalReason, updatedAt: new Date().toISOString() }
+            : r,
+        ),
+      );
 
       setShowRejectModal(false);
       setRejectingRequestId(null);
@@ -4525,7 +4587,7 @@ const App: React.FC = () => {
 
       {/* Modal para Informar o Motivo da Recusa */}
       {showRejectModal && rejectingRequestId && (() => {
-        const req = appointmentRequests.find((r) => r.id === rejectingRequestId);
+        const req = allRequests.find((r) => r.id === rejectingRequestId);
         if (!req) return null;
         const service = services.find((s) => s.id === req.serviceId);
         
@@ -5111,9 +5173,9 @@ const App: React.FC = () => {
                         <div className="flex gap-1.5">
                           <button
                             type="button"
-                            onClick={() => setSelectedDate(new Date().toISOString().split("T")[0])}
+                            onClick={() => setSelectedDate(getLocalDateString())}
                             className={`text-[9px] px-2.5 py-1 rounded-lg font-black uppercase transition-all cursor-pointer ${
-                              selectedDate === new Date().toISOString().split("T")[0]
+                              selectedDate === getLocalDateString()
                                 ? "bg-elite-cyan-500/20 text-elite-cyan-300 border border-elite-cyan-500/40 shadow-sm"
                                 : "bg-slate-900 text-slate-400 hover:text-white"
                             }`}
@@ -5125,7 +5187,7 @@ const App: React.FC = () => {
                             onClick={() => {
                               const tomorrow = new Date();
                               tomorrow.setDate(tomorrow.getDate() + 1);
-                              setSelectedDate(tomorrow.toISOString().split("T")[0]);
+                              setSelectedDate(getLocalDateString(tomorrow));
                             }}
                             className="text-[9px] px-2.5 py-1 rounded-lg font-black uppercase bg-slate-900 text-slate-400 hover:text-white transition-all cursor-pointer"
                           >
@@ -5856,7 +5918,7 @@ const App: React.FC = () => {
                                 </div>
                                 <div className="min-w-0">
                                   <p className="font-black text-sm uppercase text-white truncate leading-tight">
-                                    {c?.name || "Cliente"}
+                                    {apt.clientName || c?.name || "Cliente"}
                                   </p>
                                   <div className="flex items-center gap-2 flex-wrap mt-1">
                                     <span className="text-[10px] font-black text-elite-cyan-400 uppercase truncate">
@@ -7941,7 +8003,7 @@ const App: React.FC = () => {
                 badge:
                   appointments.filter(
                     (a) =>
-                      a.date === new Date().toISOString().split("T")[0] &&
+                      a.date === getLocalDateString() &&
                       !a.completed,
                   ).length + appointmentRequests.length,
               },
@@ -8393,7 +8455,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
     const intEndMin = hasInt ? timeToMinutes(intervalEnd) : -1;
 
     const now = new Date();
-    const todayStr = now.toISOString().split("T")[0];
+    const todayStr = getLocalDateString(now);
     const nowMin = now.getHours() * 60 + now.getMinutes() + 30;
 
     for (let currentMin = openMin; currentMin < closeMin; currentMin += 30) {
@@ -8928,7 +8990,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
                       }
 
                       const isSelected = bookingDate === cell.dateStr;
-                      const todayStr = new Date().toISOString().split("T")[0];
+                      const todayStr = getLocalDateString();
                       const isPast = cell.dateStr < todayStr;
                       const isExplicitDayOff = isSlotOrDateDayOff(bookingBarber?.unavailableSlots, cell.dateStr);
                       const isWeeklyDayOff = isWeeklyOffDay(bookingBarber?.businessHours, cell.dateStr);
