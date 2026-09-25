@@ -47,7 +47,7 @@ export enum AppointmentStatus {
 
 export interface AppointmentHistoryEntry {
   id: string;
-  action: 'created' | 'confirmed' | 'rescheduled' | 'completed' | 'cancelled' | 'auto_cancelled' | 'price_updated' | 'edited';
+  action: 'created' | 'confirmed' | 'rescheduled' | 'completed' | 'cancelled' | 'auto_cancelled' | 'price_updated' | 'edited' | 'dismissed_from_view' | 'restored_to_view' | 'status_changed';
   timestamp: string;
   actor: string;
   details?: string;
@@ -75,6 +75,13 @@ export interface Appointment {
   cancelledBy?: string;
   cancelReason?: string;
   history?: AppointmentHistoryEntry[];
+  archived?: boolean;
+  dismissedFromAgenda?: boolean;
+  dismissedAt?: string;
+  dismissedBy?: string;
+  originalDate?: string;
+  originalTime?: string;
+  updatedAt?: string;
 }
 
 export interface BusinessHours {

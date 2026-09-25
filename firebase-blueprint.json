@@ -98,7 +98,8 @@
         "notes": { "type": "string" },
         "status": { "type": "string", "enum": ["confirmed", "pending", "rejected"] },
         "clientName": { "type": "string" },
-        "clientPhone": { "type": "string" }
+        "clientPhone": { "type": "string" },
+        "archived": { "type": "boolean" }
       },
       "required": ["id", "date", "time", "status"]
     },

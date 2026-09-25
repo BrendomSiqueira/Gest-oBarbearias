@@ -270,6 +270,17 @@ export const getLocalDateString = (d: Date = new Date()): string => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
+export const formatLocalDateBR = (dateStr?: string | null): string => {
+  if (!dateStr) return "";
+  const clean = dateStr.split("T")[0];
+  const parts = clean.split("-");
+  if (parts.length === 3) {
+    const [y, m, d] = parts;
+    return `${d.padStart(2, "0")}/${m.padStart(2, "0")}/${y}`;
+  }
+  return dateStr;
+};
+
 export const normalizePhone = (p?: string | null): string => {
   if (!p) return "";
   let digits = p.replace(/\D/g, "");
@@ -981,11 +992,20 @@ const App: React.FC = () => {
   const [rejectReasonText, setRejectReasonText] = useState("");
   const [processingRequestId, setProcessingRequestId] = useState<string | null>(null);
 
-  // Estados de Auditoria, Rastreabilidade e Cancelamento Estruturado
+  // Estados de Auditoria, Rastreabilidade, Modos de Visualização e Cancelamento Estruturado
   const [selectedAptForHistory, setSelectedAptForHistory] = useState<Appointment | null>(null);
   const [cancellingApt, setCancellingApt] = useState<Appointment | null>(null);
   const [cancelReasonText, setCancelReasonText] = useState("");
+  const [editingApt, setEditingApt] = useState<Appointment | null>(null);
+  const [isSubmittingApt, setIsSubmittingApt] = useState(false);
+  const [isSubmittingEditApt, setIsSubmittingEditApt] = useState(false);
+  const [showDismissedInAgenda, setShowDismissedInAgenda] = useState(false);
+  const [showGlobalAuditModal, setShowGlobalAuditModal] = useState(false);
+  const [agendaMainView, setAgendaMainView] = useState<"active" | "confirmed" | "cancelled" | "all_history">("active");
   const [agendaFilterStatus, setAgendaFilterStatus] = useState<"all" | "pending" | "completed" | "cancelled">("all");
+  const [historyMonthFilter, setHistoryMonthFilter] = useState(() => getLocalDateString().substring(0, 7));
+  const [historySearchTerm, setHistorySearchTerm] = useState("");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<"all" | "completed" | "confirmed" | "cancelled" | "dismissed">("all");
 
   const [selectedDate, setSelectedDate] = useState(() => getLocalDateString());
   const [reportMonth, setReportMonth] = useState(
@@ -2066,6 +2086,173 @@ const App: React.FC = () => {
         OperationType.DELETE,
         `users/${userId}/appointments/${aptId}`,
       );
+    }
+  };
+
+  const handleToggleDismissAppointment = async (apt: Appointment, dismiss: boolean) => {
+    if (!auth.currentUser) return;
+    const userId = effectiveUserId;
+    if (!userId) return;
+
+    const nowIso = new Date().toISOString();
+    const actorName = auth.currentUser.displayName || "Barbeiro";
+    const historyEntry: AppointmentHistoryEntry = {
+      id: `${Date.now()}_${dismiss ? "dismiss" : "restore"}`,
+      action: (dismiss ? "dismissed_from_view" : "restored_to_view") as any,
+      timestamp: nowIso,
+      actor: actorName,
+      details: dismiss
+        ? "Removido da tela principal de acompanhamento da agenda (salvo no histórico para auditoria)"
+        : "Restaurado para a tela principal de acompanhamento da agenda",
+    };
+
+    const updatedHistory = [
+      ...(Array.isArray(apt.history) ? apt.history : []),
+      historyEntry,
+    ];
+
+    setAppointments((prev) =>
+      prev.map((a) =>
+        a.id === apt.id
+          ? {
+              ...a,
+              dismissedFromAgenda: dismiss,
+              dismissedAt: dismiss ? nowIso : undefined,
+              dismissedBy: dismiss ? actorName : undefined,
+              history: updatedHistory,
+            }
+          : a,
+      ),
+    );
+
+    try {
+      await updateDoc(doc(db, "users", userId, "appointments", apt.id), {
+        dismissedFromAgenda: dismiss,
+        dismissedAt: dismiss ? nowIso : null,
+        dismissedBy: dismiss ? actorName : null,
+        history: updatedHistory,
+      });
+
+      showToast(
+        dismiss
+          ? "Agendamento removido da tela principal. Salvo permanentemente no Histórico Completo."
+          : "Agendamento restaurado na tela principal da agenda!",
+        "success",
+      );
+    } catch (err) {
+      handleFirestoreError(
+        err,
+        OperationType.UPDATE,
+        `users/${userId}/appointments/${apt.id}`,
+      );
+    }
+  };
+
+  const handleSaveRescheduledAppointment = async (
+    aptId: string,
+    newDate: string,
+    newTime: string,
+    newServiceId: string,
+    newFinalPrice: number,
+    notes?: string,
+  ) => {
+    if (!auth.currentUser || isSubmittingEditApt) return;
+    const userId = effectiveUserId;
+    if (!userId) return;
+
+    const existingApt = appointments.find((a) => a.id === aptId);
+    if (!existingApt) return;
+
+    if (!newDate || !newTime || !newServiceId) {
+      showToast("Preencha data, horário e serviço!", "error");
+      return;
+    }
+
+    // Validação estrita de conflito para evitar agendamentos duplicados no mesmo horário
+    const conflict = appointments.find(
+      (a) =>
+        a.id !== aptId &&
+        a.date === newDate &&
+        a.time === newTime &&
+        !a.completed &&
+        a.status !== AppointmentStatus.Rejected &&
+        (a.status as any) !== "cancelled",
+    );
+    if (conflict) {
+      showToast(
+        `O horário ${newTime} em ${formatLocalDateBR(newDate)} já está ocupado por ${conflict.clientName || "outro cliente"}! Escolha outro horário.`,
+        "error",
+      );
+      return;
+    }
+
+    setIsSubmittingEditApt(true);
+    const nowIso = new Date().toISOString();
+    const actorName = auth.currentUser.displayName || "Barbeiro";
+    const historyEntries: AppointmentHistoryEntry[] = [
+      ...(Array.isArray(existingApt.history) ? existingApt.history : []),
+    ];
+
+    const isDateOrTimeChanged = existingApt.date !== newDate || existingApt.time !== newTime;
+    const isServiceOrPriceChanged =
+      existingApt.serviceId !== newServiceId || existingApt.finalPrice !== newFinalPrice;
+
+    if (isDateOrTimeChanged) {
+      historyEntries.push({
+        id: `${Date.now()}_resched`,
+        action: "rescheduled",
+        timestamp: nowIso,
+        actor: actorName,
+        details: `Reagendado de ${formatLocalDateBR(existingApt.date)} às ${existingApt.time} para ${formatLocalDateBR(newDate)} às ${newTime}`,
+        previousValue: `${existingApt.date} ${existingApt.time}`,
+        newValue: `${newDate} ${newTime}`,
+      });
+    }
+
+    if (isServiceOrPriceChanged) {
+      historyEntries.push({
+        id: `${Date.now()}_edited`,
+        action: "edited",
+        timestamp: nowIso,
+        actor: actorName,
+        details: `Dados atualizados: Serviço alterado ou valor atualizado para R$ ${newFinalPrice.toFixed(2)}`,
+        previousValue: `R$ ${existingApt.finalPrice}`,
+        newValue: `R$ ${newFinalPrice}`,
+      });
+    }
+
+    const updatedData: Partial<Appointment> = {
+      date: newDate,
+      time: newTime,
+      serviceId: newServiceId,
+      finalPrice: newFinalPrice,
+      notes: notes ?? existingApt.notes,
+      originalDate: existingApt.originalDate || (isDateOrTimeChanged ? existingApt.date : undefined),
+      originalTime: existingApt.originalTime || (isDateOrTimeChanged ? existingApt.time : undefined),
+      updatedAt: nowIso,
+      history: historyEntries,
+    };
+
+    // Otimista
+    setAppointments((prev) =>
+      prev.map((a) => (a.id === aptId ? { ...a, ...updatedData } : a)),
+    );
+
+    try {
+      await updateDoc(
+        doc(db, "users", userId, "appointments", aptId),
+        updatedData as any,
+      );
+      setEditingApt(null);
+      showToast("Agendamento atualizado com sucesso!", "success");
+    } catch (err) {
+      handleFirestoreError(
+        err,
+        OperationType.UPDATE,
+        `users/${userId}/appointments/${aptId}`,
+      );
+    } finally {
+      setIsSubmittingEditApt(false);
     }
   };
 
@@ -4939,6 +5126,12 @@ const App: React.FC = () => {
               return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30">Cancelamento Automático</span>;
             case "rescheduled":
               return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-purple-500/20 text-purple-400 border border-purple-500/30">Reagendado</span>;
+            case "edited":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">Editado</span>;
+            case "dismissed_from_view":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1"><EyeOff size={10} /> Ocultado da Tela</span>;
+            case "restored_to_view":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-teal-500/20 text-teal-400 border border-teal-500/30 flex items-center gap-1"><Eye size={10} /> Restaurado na Tela</span>;
             default:
               return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-slate-500/20 text-slate-300">Atualizado</span>;
           }
@@ -4957,7 +5150,7 @@ const App: React.FC = () => {
                       Histórico e Rastreabilidade
                     </h3>
                     <p className="text-xs text-slate-400">
-                      {apt.clientName || client?.name || "Cliente"} • {apt.date.split("-").reverse().join("/")} às {apt.time}
+                      {apt.clientName || client?.name || "Cliente"} • {formatLocalDateBR(apt.date)} às {apt.time}
                     </p>
                   </div>
                 </div>
@@ -5012,6 +5205,13 @@ const App: React.FC = () => {
                         <p className="text-xs text-slate-200 font-medium leading-snug">
                           {entry.details || "Operação registrada no sistema"}
                         </p>
+                        {entry.previousValue && entry.newValue && (
+                          <div className="text-[10px] text-slate-400 bg-black/40 px-2 py-1 rounded border border-white/5 flex items-center gap-2">
+                            <span className="line-through text-slate-500">{entry.previousValue}</span>
+                            <span className="text-elite-cyan-400">→</span>
+                            <span className="text-white font-bold">{entry.newValue}</span>
+                          </div>
+                        )}
                         <p className="text-[10px] text-slate-400">
                           Responsável: <span className="text-slate-300 font-bold">{entry.actor}</span>
                         </p>
@@ -5022,7 +5222,7 @@ const App: React.FC = () => {
               </div>
 
               {/* Ações de Gestão */}
-              <div className="flex items-center justify-between pt-3 border-t border-white/5 gap-2">
+              <div className="flex items-center justify-between pt-3 border-t border-white/5 gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={() => handleHardDeleteAppointment(apt.id)}
@@ -5031,13 +5231,30 @@ const App: React.FC = () => {
                 >
                   Excluir Definitivamente
                 </button>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => setSelectedAptForHistory(null)}
-                >
-                  Fechar
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant={apt.dismissedFromAgenda ? "success" : "secondary"}
+                    size="sm"
+                    onClick={() => handleToggleDismissAppointment(apt, !apt.dismissedFromAgenda)}
+                  >
+                    {apt.dismissedFromAgenda ? (
+                      <>
+                        <Eye size={14} /> Restaurar na Tela Principal
+                      </>
+                    ) : (
+                      <>
+                        <EyeOff size={14} /> Ocultar da Tela Principal
+                      </>
+                    )}
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setSelectedAptForHistory(null)}
+                  >
+                    Fechar
+                  </Button>
+                </div>
               </div>
             </div>
           </div>
@@ -5131,6 +5348,307 @@ const App: React.FC = () => {
           </div>
         );
       })()}
+
+      {/* Modal de Reagendamento e Edição de Agendamento (Requisito 1 e 2) */}
+      {editingApt && (() => {
+        const apt = editingApt;
+        const client = clients.find((c) => c.id === apt.clientId);
+        const currentService = services.find((s) => s.id === apt.serviceId);
+
+        return (
+          <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-lg bg-slate-900 border border-elite-cyan-500/30 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-5">
+              <div className="flex items-start justify-between border-b border-white/5 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-elite-cyan-500/10 border border-elite-cyan-500/20 rounded-2xl text-elite-cyan-400">
+                    <Edit3 size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase tracking-wide">
+                      Editar / Reagendar Agendamento
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      {apt.clientName || client?.name || "Cliente"} • {formatLocalDateBR(apt.date)} às {apt.time}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setEditingApt(null)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-all cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-3 bg-elite-cyan-500/5 rounded-2xl border border-elite-cyan-500/10 text-xs text-elite-cyan-200/90 leading-relaxed">
+                As alterações atualizam o agendamento de forma atômica e registram histórico completo de auditoria (data anterior, novo horário e responsável), prevenindo duplicidades e conflitos.
+              </div>
+
+              <form
+                className="space-y-4"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const form = e.currentTarget;
+                  const newDate = (form.elements.namedItem("editDate") as HTMLInputElement)?.value;
+                  const newTime = (form.elements.namedItem("editTime") as HTMLInputElement)?.value;
+                  const newServiceId = (form.elements.namedItem("editServiceId") as HTMLSelectElement)?.value;
+                  const newPrice = Number((form.elements.namedItem("editPrice") as HTMLInputElement)?.value);
+                  const notes = (form.elements.namedItem("editNotes") as HTMLInputElement)?.value;
+
+                  handleSaveRescheduledAppointment(
+                    apt.id,
+                    newDate,
+                    newTime,
+                    newServiceId,
+                    isNaN(newPrice) ? 0 : newPrice,
+                    notes,
+                  );
+                }}
+              >
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      Nova Data
+                    </label>
+                    <input
+                      type="date"
+                      name="editDate"
+                      defaultValue={apt.date}
+                      required
+                      className="w-full bg-slate-950 border border-white/10 focus:border-elite-cyan-400 rounded-xl px-4 py-2.5 text-white text-xs outline-none"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      Novo Horário
+                    </label>
+                    <input
+                      type="time"
+                      name="editTime"
+                      defaultValue={apt.time}
+                      required
+                      className="w-full bg-slate-950 border border-white/10 focus:border-elite-cyan-400 rounded-xl px-4 py-2.5 text-white text-xs outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                    Serviço
+                  </label>
+                  <select
+                    name="editServiceId"
+                    defaultValue={apt.serviceId}
+                    required
+                    onChange={(e) => {
+                      const sel = services.find((s) => s.id === e.target.value);
+                      const priceInput = (e.currentTarget.form?.elements.namedItem("editPrice") as HTMLInputElement);
+                      if (sel && priceInput) {
+                        priceInput.value = String(sel.price);
+                      }
+                    }}
+                    className="w-full bg-slate-950 border border-white/10 focus:border-elite-cyan-400 rounded-xl px-4 py-2.5 text-white text-xs outline-none cursor-pointer"
+                  >
+                    {services.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} - R$ {s.price.toFixed(2)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      Valor Final (R$)
+                    </label>
+                    <input
+                      type="number"
+                      name="editPrice"
+                      step="0.01"
+                      defaultValue={apt.finalPrice > 0 ? apt.finalPrice : currentService?.price || 0}
+                      required
+                      className="w-full bg-slate-950 border border-white/10 focus:border-elite-cyan-400 rounded-xl px-4 py-2.5 text-white text-xs outline-none font-mono"
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      Observações
+                    </label>
+                    <input
+                      type="text"
+                      name="editNotes"
+                      defaultValue={apt.notes || ""}
+                      placeholder="Ex: Preferência por máquina 2..."
+                      className="w-full bg-slate-950 border border-white/10 focus:border-elite-cyan-400 rounded-xl px-4 py-2.5 text-white text-xs outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-white/5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditingApt(null)}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="sm"
+                    disabled={isSubmittingEditApt}
+                    isLoading={isSubmittingEditApt}
+                    icon={<Save size={14} />}
+                  >
+                    Salvar Alterações
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Modal de Logs Globais de Rastreamento e Auditoria de Agendamentos (Requisito 7) */}
+      {showGlobalAuditModal && (() => {
+        const allLogs = appointments.flatMap((a) => {
+          const client = clients.find((c) => c.id === a.clientId);
+          const service = services.find((s) => s.id === a.serviceId);
+          const historyArr: AppointmentHistoryEntry[] = Array.isArray(a.history) && a.history.length > 0
+            ? a.history
+            : [
+                {
+                  id: `${a.id}_init`,
+                  action: "created" as const,
+                  timestamp: a.createdAt || new Date().toISOString(),
+                  actor: "Sistema",
+                  details: `Agendado para ${formatLocalDateBR(a.date)} às ${a.time}`,
+                },
+              ];
+
+          return historyArr.map((h) => ({
+            ...h,
+            appointmentId: a.id,
+            appointmentDate: a.date,
+            appointmentTime: a.time,
+            clientName: a.clientName || client?.name || "Cliente",
+            serviceName: service?.name || "Corte",
+          }));
+        }).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+        const getAuditActionBadge = (action: string) => {
+          switch (action) {
+            case "created":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-blue-500/20 text-blue-400 border border-blue-500/30">Criação</span>;
+            case "confirmed":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">Confirmação</span>;
+            case "completed":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">Conclusão</span>;
+            case "cancelled":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-rose-500/20 text-rose-400 border border-rose-500/30">Cancelamento</span>;
+            case "auto_cancelled":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30">Auto Cancelado</span>;
+            case "rescheduled":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-purple-500/20 text-purple-400 border border-purple-500/30">Reagendamento</span>;
+            case "edited":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-indigo-500/20 text-indigo-400 border border-indigo-500/30">Edição</span>;
+            case "dismissed_from_view":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-amber-500/20 text-amber-400 border border-amber-500/30">Ocultado</span>;
+            case "restored_to_view":
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-teal-500/20 text-teal-400 border border-teal-500/30">Restaurado</span>;
+            default:
+              return <span className="px-2 py-0.5 rounded text-[9px] font-black uppercase bg-slate-500/20 text-slate-300">Registro</span>;
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-[210] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="w-full max-w-2xl bg-slate-900 border border-white/10 rounded-3xl p-6 sm:p-7 shadow-2xl space-y-4 max-h-[90vh] flex flex-col">
+              <div className="flex items-start justify-between border-b border-white/5 pb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-elite-cyan-500/10 border border-elite-cyan-500/20 rounded-2xl text-elite-cyan-400">
+                    <ShieldCheck size={22} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase tracking-wide">
+                      Logs de Auditoria e Rastreamento Geral
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Rastreamento completo de alterações de status, datas, reagendamentos e visibilidade ({allLogs.length} eventos registrados)
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setShowGlobalAuditModal(false)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/5 transition-all cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="p-3 bg-slate-950/60 rounded-2xl border border-white/5 text-xs text-slate-300 leading-relaxed">
+                Este painel permite a auditoria completa de qualquer alteração de data, horário, cancelamento e remoção da tela principal, assegurando conformidade e transparência operacional contínua.
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-1">
+                {allLogs.length === 0 ? (
+                  <div className="p-10 text-center text-slate-500">
+                    Nenhum log de auditoria encontrado.
+                  </div>
+                ) : (
+                  allLogs.slice(0, 100).map((log, idx) => (
+                    <div
+                      key={log.id || idx}
+                      className="bg-slate-950/80 border border-white/5 rounded-2xl p-3.5 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2">
+                          {getAuditActionBadge(log.action)}
+                          <span className="text-xs font-black text-white uppercase">
+                            {log.clientName}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            • {log.serviceName} ({formatLocalDateBR(log.appointmentDate)} às {log.appointmentTime})
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {new Date(log.timestamp).toLocaleString("pt-BR")}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 font-medium">
+                        {log.details || "Ação executada no agendamento"}
+                      </p>
+                      {log.previousValue && log.newValue && (
+                        <div className="text-[10px] text-slate-400 bg-black/40 px-2.5 py-1 rounded-lg border border-white/5 flex items-center gap-2">
+                          <span className="line-through text-slate-500">{log.previousValue}</span>
+                          <span className="text-elite-cyan-400">→</span>
+                          <span className="text-white font-bold">{log.newValue}</span>
+                        </div>
+                      )}
+                      <p className="text-[10px] text-slate-500">
+                        Responsável: <span className="text-slate-300 font-bold">{log.actor}</span>
+                      </p>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div className="flex items-center justify-end pt-3 border-t border-white/5">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setShowGlobalAuditModal(false)}
+                >
+                  Fechar
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
 
       {/* Modal para Informar o Motivo da Recusa */}
       {showRejectModal && rejectingRequestId && (() => {
@@ -5615,6 +6133,8 @@ const App: React.FC = () => {
                     className="space-y-4"
                     onSubmit={async (e) => {
                       e.preventDefault();
+                      if (isSubmittingApt) return;
+
                       const form = e.currentTarget;
                       const date = selectedDate;
                       const time = aptTimeInput || (form.elements.namedItem("t") as HTMLInputElement)?.value;
@@ -5658,6 +6178,8 @@ const App: React.FC = () => {
                       }
 
                       const service = services.find((s) => s.id === serviceId) || selectedAptService;
+                      
+                      // 1. Verificação estrita de conflito de horário no mesmo dia
                       const conflict = appointments.find(
                         (a) =>
                           a.date === date &&
@@ -5666,15 +6188,37 @@ const App: React.FC = () => {
                           a.status !== AppointmentStatus.Rejected &&
                           (a.status as any) !== "cancelled",
                       );
-                      if (conflict)
+                      if (conflict) {
                         return showToast(
-                          `Este horário já está ocupado por ${conflict.clientName || "outro agendamento"}!`,
+                          `Este horário (${time}) já está ocupado por ${conflict.clientName || "outro cliente"}!`,
                           "error",
                         );
+                      }
 
+                      // 2. Verificação de duplicidade para o mesmo cliente
+                      const clientConflict = appointments.find(
+                        (a) =>
+                          a.date === date &&
+                          a.time === time &&
+                          a.clientId === targetClient.id &&
+                          !a.completed &&
+                          a.status !== AppointmentStatus.Rejected &&
+                          (a.status as any) !== "cancelled",
+                      );
+                      if (clientConflict) {
+                        return showToast(
+                          `O cliente ${targetClient.name} já possui um agendamento ativo neste mesmo dia e horário (${time})!`,
+                          "error",
+                        );
+                      }
+
+                      setIsSubmittingApt(true);
                       const id = Date.now().toString();
                       const userId = effectiveUserId;
-                      if (!userId) return;
+                      if (!userId) {
+                        setIsSubmittingApt(false);
+                        return;
+                      }
 
                       const nowIso = new Date().toISOString();
                       const historyEntries: AppointmentHistoryEntry[] = [
@@ -5683,7 +6227,7 @@ const App: React.FC = () => {
                           action: "created",
                           timestamp: nowIso,
                           actor: auth.currentUser?.displayName || "Barbeiro",
-                          details: `Agendado manualmente para ${date.split("-").reverse().join("/")} às ${time}`,
+                          details: `Agendado manualmente para ${formatLocalDateBR(date)} às ${time}`,
                         },
                       ];
 
@@ -5714,8 +6258,11 @@ const App: React.FC = () => {
                           newApt,
                         );
 
-                        // Atualização otimista imediata na UI
-                        setAppointments((prev) => [...prev, newApt]);
+                        // Atualização otimista idempotente na UI
+                        setAppointments((prev) => {
+                          const exists = prev.some((a) => a.id === id);
+                          return exists ? prev : [...prev, newApt];
+                        });
 
                         setAptClientSearch("");
                         setSelectedAptClient(null);
@@ -5731,6 +6278,8 @@ const App: React.FC = () => {
                           OperationType.WRITE,
                           `users/${userId}/appointments/${id}`,
                         );
+                      } finally {
+                        setIsSubmittingApt(false);
                       }
                     }}
                   >
@@ -6325,512 +6874,994 @@ const App: React.FC = () => {
                       )}
                     </div>
 
-                    <Button type="submit" className="w-full h-12 text-[10px] font-black uppercase tracking-widest bg-elite-red-500 hover:bg-elite-red-600 shadow-lg shadow-elite-red-500/20 cursor-pointer">
+                    <Button
+                      type="submit"
+                      disabled={isSubmittingApt}
+                      isLoading={isSubmittingApt}
+                      className="w-full h-12 text-[10px] font-black uppercase tracking-widest bg-elite-red-500 hover:bg-elite-red-600 shadow-lg shadow-elite-red-500/20 cursor-pointer"
+                    >
                       CONFIRMAR AGENDAMENTO
                     </Button>
                   </form>
                 </Card>
               </div>
 
-              {/* Coluna Direita: Agenda Diária, Pesquisa de Cortes/Clientes e Métricas */}
+              {/* Coluna Direita: Agenda Diária, Pesquisa de Cortes/Clientes, 4 Modos de Visualização e Histórico Completo */}
               <div className={`lg:col-span-7 xl:col-span-7 space-y-4 ${mobileAgendaTab === "agenda" ? "block" : "hidden lg:block"}`}>
-                {/* Cabeçalho da Agenda do Dia com Métricas */}
-                <div className="bg-slate-900/70 p-5 sm:p-6 rounded-2xl sm:rounded-3xl border border-white/[0.08] space-y-4 shadow-xl">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div>
-                      <h3 className="font-black uppercase text-sm tracking-widest text-white flex items-center gap-2">
-                        <Calendar size={16} className="text-elite-cyan-400" />
-                        Agenda do Dia:{" "}
-                        <span className="text-amber-400">
-                          {new Date(selectedDate + "T00:00:00").toLocaleDateString("pt-BR")}
-                        </span>
-                      </h3>
-                      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
-                        {
-                          appointments.filter(
-                            (a) => a.date === selectedDate && !a.completed
-                          ).length
-                        }{" "}
-                        atendimento(s) pendente(s) hoje
-                      </p>
+                
+                {/* 4 Visualizações Separadas de Agendamentos (Requisito 5) */}
+                <div className="flex items-center gap-1.5 p-1.5 bg-slate-900/90 rounded-2xl border border-white/10 shadow-xl overflow-x-auto">
+                  <button
+                    type="button"
+                    onClick={() => setAgendaMainView("active")}
+                    className={`flex-1 min-w-[120px] py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      agendaMainView === "active"
+                        ? "bg-elite-cyan-500 text-slate-950 shadow-md shadow-elite-cyan-500/25"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <Clock size={14} />
+                    <span>
+                      Ativos ({
+                        appointments.filter(
+                          (a) =>
+                            a.date === selectedDate &&
+                            !a.completed &&
+                            a.status !== AppointmentStatus.Rejected &&
+                            (a.status as any) !== "cancelled" &&
+                            (!a.dismissedFromAgenda || showDismissedInAgenda)
+                        ).length
+                      })
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAgendaMainView("confirmed")}
+                    className={`flex-1 min-w-[130px] py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      agendaMainView === "confirmed"
+                        ? "bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/25"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <CheckCircle2 size={14} />
+                    <span>
+                      Confirmados ({
+                        appointments.filter(
+                          (a) =>
+                            a.date === selectedDate &&
+                            a.status !== AppointmentStatus.Rejected &&
+                            (a.status as any) !== "cancelled" &&
+                            (!a.dismissedFromAgenda || showDismissedInAgenda)
+                        ).length
+                      })
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAgendaMainView("cancelled")}
+                    className={`flex-1 min-w-[130px] py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      agendaMainView === "cancelled"
+                        ? "bg-rose-600 text-white shadow-md shadow-rose-600/25"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <XCircle size={14} />
+                    <span>
+                      Cancelados ({
+                        appointments.filter(
+                          (a) =>
+                            a.date === selectedDate &&
+                            (a.status === AppointmentStatus.Rejected ||
+                              (a.status as any) === "cancelled") &&
+                            (!a.dismissedFromAgenda || showDismissedInAgenda)
+                        ).length
+                      })
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAgendaMainView("all_history")}
+                    className={`flex-1 min-w-[140px] py-2.5 px-3 rounded-xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${
+                      agendaMainView === "all_history"
+                        ? "bg-amber-400 text-slate-950 shadow-md shadow-amber-400/25"
+                        : "text-slate-400 hover:text-white"
+                    }`}
+                  >
+                    <History size={14} />
+                    <span>Histórico ({appointments.length})</span>
+                  </button>
+                </div>
+
+                {/* VISUALIZAÇÃO 1, 2 e 3: Agenda do Dia Selecionado */}
+                {agendaMainView !== "all_history" && (
+                  <div className="space-y-4">
+                    {/* Cabeçalho da Agenda do Dia */}
+                    <div className="bg-slate-900/70 p-5 sm:p-6 rounded-2xl sm:rounded-3xl border border-white/[0.08] space-y-4 shadow-xl">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                        <div>
+                          <h3 className="font-black uppercase text-sm tracking-widest text-white flex items-center gap-2">
+                            <Calendar size={16} className="text-elite-cyan-400" />
+                            Agenda do Dia:{" "}
+                            <span className="text-amber-400">
+                              {formatLocalDateBR(selectedDate)}
+                            </span>
+                          </h3>
+                          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
+                            {
+                              appointments.filter(
+                                (a) =>
+                                  a.date === selectedDate &&
+                                  !a.completed &&
+                                  a.status !== AppointmentStatus.Rejected &&
+                                  (a.status as any) !== "cancelled"
+                              ).length
+                            }{" "}
+                            atendimento(s) em aberto hoje
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedDate(getLocalDateString())}
+                            className={`px-2.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              selectedDate === getLocalDateString()
+                                ? "bg-elite-cyan-500/20 text-elite-cyan-300 border border-elite-cyan-500/40"
+                                : "bg-slate-950 text-slate-400 hover:text-white border border-white/5"
+                            }`}
+                          >
+                            Hoje
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const tom = new Date();
+                              tom.setDate(tom.getDate() + 1);
+                              setSelectedDate(getLocalDateString(tom));
+                            }}
+                            className="px-2.5 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider bg-slate-950 text-slate-400 hover:text-white border border-white/5 transition-all cursor-pointer"
+                          >
+                            Amanhã
+                          </button>
+                          <input
+                            type="date"
+                            value={selectedDate}
+                            onChange={(e) => setSelectedDate(e.target.value)}
+                            className="bg-slate-950 border border-white/10 rounded-xl px-3 py-1.5 text-xs font-black text-white outline-none focus:border-elite-cyan-400 cursor-pointer"
+                          />
+                          <IconButton
+                            icon={<ShieldCheck size={16} className="text-elite-cyan-400" />}
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setShowGlobalAuditModal(true)}
+                            title="Logs de Rastreamento e Auditoria Geral"
+                          />
+                        </div>
+                      </div>
+
+                      {isSlotOrDateDayOff(session?.unavailableSlots, selectedDate) ? (
+                        <div className="flex items-center gap-2.5 px-3.5 py-2.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-rose-300 text-xs font-bold">
+                          <Lock size={15} className="text-rose-400 shrink-0" />
+                          <span>Data com <strong>Folga Pontual</strong> ativa. Agendamentos públicos estão desativados para este dia.</span>
+                        </div>
+                      ) : isWeeklyOffDay(session?.businessHours, selectedDate) ? (
+                        <div className="flex items-center gap-2.5 px-3.5 py-2.5 bg-amber-500/10 border border-amber-500/25 rounded-xl text-amber-300 text-xs font-bold">
+                          <Clock size={15} className="text-amber-400 shrink-0" />
+                          <span>Dia <strong>Fora do Expediente Regular</strong>. Barbearia fechada conforme sua escala semanal.</span>
+                        </div>
+                      ) : null}
+
+                      {/* Resumo Métrico Rápido do Dia */}
+                      {(() => {
+                        const dayApts = appointments.filter((a) => a.date === selectedDate);
+                        const activeApts = dayApts.filter(
+                          (a) =>
+                            !a.completed &&
+                            a.status !== AppointmentStatus.Rejected &&
+                            (a.status as any) !== "cancelled",
+                        );
+                        const completed = dayApts.filter((a) => a.completed).length;
+                        const cancelled = dayApts.filter(
+                          (a) =>
+                            a.status === AppointmentStatus.Rejected ||
+                            (a.status as any) === "cancelled",
+                        ).length;
+                        const pending = activeApts.length;
+                        const dismissedCount = dayApts.filter((a) => a.dismissedFromAgenda).length;
+
+                        return (
+                          <div className="space-y-3 pt-3 border-t border-white/5">
+                            <div className="grid grid-cols-4 gap-2 text-center">
+                              <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                                <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Total</span>
+                                <span className="text-xs sm:text-sm font-black text-white">{dayApts.length}</span>
+                              </div>
+                              <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                                <span className="text-[8px] font-bold text-elite-cyan-400 uppercase tracking-wider block mb-0.5">Pendentes</span>
+                                <span className="text-xs sm:text-sm font-black text-elite-cyan-400">{pending}</span>
+                              </div>
+                              <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                                <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-wider block mb-0.5">Concluídos</span>
+                                <span className="text-xs sm:text-sm font-black text-emerald-400">{completed}</span>
+                              </div>
+                              <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                                <span className="text-[8px] font-bold text-rose-400 uppercase tracking-wider block mb-0.5">Cancelados</span>
+                                <span className="text-xs sm:text-sm font-black text-rose-400">{cancelled}</span>
+                              </div>
+                            </div>
+
+                            {/* Alerta / Toggle de Itens Ocultados da Tela Principal (Requisito 4) */}
+                            {dismissedCount > 0 && (
+                              <div className="flex items-center justify-between px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[11px] font-bold text-amber-300">
+                                <div className="flex items-center gap-2">
+                                  <EyeOff size={14} className="text-amber-400" />
+                                  <span>
+                                    {dismissedCount} agendamento(s) removido(s) da visualização principal (preservados no histórico).
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => setShowDismissedInAgenda(!showDismissedInAgenda)}
+                                  className="text-[10px] font-black uppercase text-amber-400 hover:text-white underline cursor-pointer"
+                                >
+                                  {showDismissedInAgenda ? "Ocultar novamente" : "Exibir aqui"}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
-                    <div className="flex items-center gap-2">
+
+                    {/* Campo de Pesquisa em Tempo Real de Cortes / Clientes / Horários */}
+                    <div className="relative">
                       <input
-                        type="date"
-                        value={selectedDate}
-                        onChange={(e) => setSelectedDate(e.target.value)}
-                        className="bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-xs font-black text-white outline-none focus:border-elite-cyan-400 cursor-pointer"
+                        type="text"
+                        placeholder="Pesquisar corte, cliente ou horário na agenda..."
+                        value={agendaSearchTerm}
+                        onChange={(e) => setAgendaSearchTerm(e.target.value)}
+                        className="w-full bg-slate-900/70 border border-white/10 focus:border-elite-cyan-400 rounded-xl sm:rounded-2xl px-4 py-3 pl-10 text-white text-xs font-bold outline-none placeholder-slate-500 shadow-md transition-all"
                       />
+                      <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                      {agendaSearchTerm && (
+                        <button
+                          type="button"
+                          onClick={() => setAgendaSearchTerm("")}
+                          className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white cursor-pointer"
+                        >
+                          <X size={14} />
+                        </button>
+                      )}
                     </div>
+
+                    {/* Lista de Agendamentos do Dia Conforme Visão Selecionada */}
+                    {(() => {
+                      const dayApts = appointments.filter((a) => a.date === selectedDate);
+                      const filteredAppointments = dayApts
+                        .filter((a) => {
+                          const isCancelled =
+                            a.status === AppointmentStatus.Rejected ||
+                            (a.status as any) === "cancelled";
+
+                          // Filtro da Visão Principal
+                          if (agendaMainView === "active") {
+                            if (a.completed || isCancelled) return false;
+                          } else if (agendaMainView === "confirmed") {
+                            if (isCancelled) return false;
+                          } else if (agendaMainView === "cancelled") {
+                            if (!isCancelled) return false;
+                          }
+
+                          // Filtro de Ocultados da Tela Principal (Requisito 4)
+                          if (a.dismissedFromAgenda && !showDismissedInAgenda) {
+                            return false;
+                          }
+
+                          if (!agendaSearchTerm.trim()) return true;
+
+                          const c = clients.find((cl) => cl.id === a.clientId);
+                          const s = services.find((sv) => sv.id === a.serviceId);
+                          const term = agendaSearchTerm.toLowerCase();
+                          const clientMatch = (a.clientName || c?.name || "").toLowerCase().includes(term);
+                          const serviceMatch = (s?.name || "").toLowerCase().includes(term);
+                          const timeMatch = (a.time || "").toLowerCase().includes(term);
+
+                          return clientMatch || serviceMatch || timeMatch;
+                        })
+                        .sort((a, b) => a.time.localeCompare(b.time));
+
+                      if (filteredAppointments.length === 0) {
+                        return (
+                          <div className="p-10 text-center bg-slate-900/30 rounded-2xl sm:rounded-3xl border border-dashed border-white/10 space-y-2">
+                            <Calendar size={28} className="mx-auto text-slate-600" />
+                            <p className="font-black uppercase tracking-widest text-[10px] text-slate-500">
+                              {agendaSearchTerm
+                                ? "Nenhum resultado para a pesquisa"
+                                : agendaMainView === "cancelled"
+                                  ? "Nenhum agendamento cancelado para este dia"
+                                  : agendaMainView === "confirmed"
+                                    ? "Nenhum agendamento confirmado para este dia"
+                                    : agendaMainView === "active"
+                                      ? "Nenhum agendamento em aberto para este dia"
+                                      : "Nenhum agendamento registrado para este dia"}
+                            </p>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="space-y-3">
+                          {agendaSearchTerm && (
+                            <p className="text-[10px] font-black text-elite-cyan-400 uppercase tracking-wider px-1">
+                              Mostrando {filteredAppointments.length} agendamento(s) para "{agendaSearchTerm}"
+                            </p>
+                          )}
+                          {filteredAppointments.map((apt) => {
+                            const c = clients.find((cl) => cl.id === apt.clientId);
+                            const s = services.find((sv) => sv.id === apt.serviceId);
+                            const isCancelled =
+                              apt.status === AppointmentStatus.Rejected ||
+                              (apt.status as any) === "cancelled";
+                            const clientPhone = apt.clientPhone || c?.phone || "";
+
+                            return (
+                              <div
+                                key={apt.id}
+                                className={`p-4 sm:p-5 rounded-2xl sm:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group shadow-lg transition-all ${
+                                  isCancelled
+                                    ? "bg-rose-950/20 border border-rose-500/20 opacity-90"
+                                    : apt.completed
+                                      ? "bg-emerald-950/20 border border-emerald-500/20"
+                                      : "bg-slate-900/70 border border-white/[0.08] hover:bg-slate-900 hover:border-white/20"
+                                }`}
+                              >
+                                <div className="flex items-center gap-3.5 min-w-0">
+                                  <span className="text-2xl sm:text-3xl font-black text-white font-mono shrink-0 tracking-tight">
+                                    {apt.time}
+                                  </span>
+                                  <div className="flex items-center gap-3 min-w-0">
+                                    <div className="h-11 w-11 rounded-xl bg-slate-950 border border-elite-red-500/30 overflow-hidden shadow-md flex items-center justify-center shrink-0">
+                                      {c?.photo ? (
+                                        <img
+                                          src={c.photo}
+                                          className="h-full w-full object-cover"
+                                        />
+                                      ) : (
+                                        <UserIcon
+                                          className="text-slate-500"
+                                          size={20}
+                                        />
+                                      )}
+                                    </div>
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <p className="font-black text-sm uppercase text-white truncate leading-tight">
+                                          {apt.clientName || c?.name || "Cliente"}
+                                        </p>
+                                        {isCancelled && (
+                                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                            Cancelado
+                                          </span>
+                                        )}
+                                        {apt.completed && (
+                                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                            Concluído
+                                          </span>
+                                        )}
+                                        {apt.dismissedFromAgenda && (
+                                          <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                            <EyeOff size={10} />
+                                            Oculto da Tela Principal
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="flex items-center gap-2 flex-wrap mt-1">
+                                        <span className="text-[10px] font-black text-elite-cyan-400 uppercase truncate">
+                                          {s?.name || "Corte"}
+                                        </span>
+                                        {apt.pricePending ? (
+                                          <Badge variant="warning" size="sm">
+                                            <Clock size={10} />
+                                            Valor a Definir
+                                          </Badge>
+                                        ) : (
+                                          <span className="text-[11px] font-black text-amber-400 font-mono">
+                                            {formatCurrency(apt.finalPrice)}
+                                          </span>
+                                        )}
+                                        {isCancelled && apt.cancelReason && (
+                                          <span className="text-[10px] text-rose-300/80 truncate max-w-[200px]" title={apt.cancelReason}>
+                                            • {apt.cancelReason}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                                  {finishingAptId === apt.id ? (
+                                    <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 p-2.5 bg-slate-950/95 rounded-2xl border border-amber-400/40 shadow-2xl animate-in slide-in-from-right duration-200">
+                                      <div className="flex items-center gap-1.5 w-full sm:w-auto">
+                                        <span className="text-[10px] font-black text-amber-400 uppercase pl-1">
+                                          R$
+                                        </span>
+                                        <input
+                                          type="number"
+                                          step="0.01"
+                                          value={
+                                            finishingPriceMap[apt.id] !== undefined
+                                              ? finishingPriceMap[apt.id]
+                                              : (apt.pricePending
+                                                  ? (s?.price ? String(s.price) : "")
+                                                  : (apt.finalPrice > 0 ? String(apt.finalPrice) : (s?.price ? String(s.price) : "")))
+                                          }
+                                          onChange={(e) =>
+                                            setFinishingPriceMap({
+                                              ...finishingPriceMap,
+                                              [apt.id]: e.target.value,
+                                            })
+                                          }
+                                          placeholder={s?.price ? `Padrão: ${s.price}` : "0.00"}
+                                          className="w-24 bg-slate-900 border border-white/10 focus:border-amber-400 text-white text-xs font-black px-2.5 py-1.5 rounded-xl outline-none"
+                                          autoFocus
+                                        />
+                                        {s?.price && (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setFinishingPriceMap({
+                                                ...finishingPriceMap,
+                                                [apt.id]: String(s.price),
+                                              })
+                                            }
+                                            className="text-[9px] font-black uppercase px-2 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-amber-400 rounded-lg border border-white/5 cursor-pointer"
+                                            title={`Usar valor padrão de R$ ${s.price}`}
+                                          >
+                                            R${s.price}
+                                          </button>
+                                        )}
+                                      </div>
+
+                                      <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end">
+                                        <Button
+                                          variant="success"
+                                          size="sm"
+                                          onClick={() => {
+                                            const rawVal = finishingPriceMap[apt.id];
+                                            const valNum = rawVal !== undefined && rawVal !== ""
+                                              ? Number(rawVal)
+                                              : (apt.finalPrice > 0 ? apt.finalPrice : (s?.price || 0));
+                                            toggleCompleteFlow(apt.id, true, isNaN(valNum) ? 0 : valNum);
+                                          }}
+                                        >
+                                          RECEBIDO
+                                        </Button>
+                                        <Button
+                                          variant="warning"
+                                          size="sm"
+                                          onClick={() => {
+                                            const rawVal = finishingPriceMap[apt.id];
+                                            const valNum = rawVal !== undefined && rawVal !== ""
+                                              ? Number(rawVal)
+                                              : (apt.finalPrice > 0 ? apt.finalPrice : (s?.price || 0));
+                                            toggleCompleteFlow(apt.id, false, isNaN(valNum) ? 0 : valNum);
+                                          }}
+                                        >
+                                          DÉBITO
+                                        </Button>
+                                        <IconButton
+                                          icon={<X size={15} />}
+                                          variant="ghost"
+                                          size="sm"
+                                          onClick={() => setFinishingAptId(null)}
+                                          title="Cancelar"
+                                        />
+                                      </div>
+                                    </div>
+                                  ) : isCancelled ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <IconButton
+                                        icon={<History size={15} />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setSelectedAptForHistory(apt)}
+                                        title="Ver Histórico e Auditoria"
+                                      />
+                                      <IconButton
+                                        icon={apt.dismissedFromAgenda ? <Eye size={15} className="text-emerald-400" /> : <EyeOff size={15} className="text-slate-400 hover:text-amber-400" />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleToggleDismissAppointment(apt, !apt.dismissedFromAgenda)}
+                                        title={apt.dismissedFromAgenda ? "Restaurar na Tela Principal" : "Remover da Tela Principal (preserva no Histórico)"}
+                                      />
+                                      <Button
+                                        variant="secondary"
+                                        size="sm"
+                                        onClick={async () => {
+                                          if (!auth.currentUser) return;
+                                          const userId = effectiveUserId;
+                                          if (!userId) return;
+                                          const nowIso = new Date().toISOString();
+                                          const historyEntry: AppointmentHistoryEntry = {
+                                            id: `${Date.now()}_reactivated`,
+                                            action: "confirmed",
+                                            timestamp: nowIso,
+                                            actor: auth.currentUser.displayName || "Barbeiro",
+                                            details: "Agendamento reativado na agenda",
+                                          };
+                                          const updatedHistory = [
+                                            ...(Array.isArray(apt.history) ? apt.history : []),
+                                            historyEntry,
+                                          ];
+                                          setAppointments((prev) =>
+                                            prev.map((a) =>
+                                              a.id === apt.id
+                                                ? {
+                                                    ...a,
+                                                    status: AppointmentStatus.Confirmed,
+                                                    cancelledAt: undefined,
+                                                    cancelReason: undefined,
+                                                    cancelledBy: undefined,
+                                                    history: updatedHistory,
+                                                  }
+                                                : a,
+                                            ),
+                                          );
+                                          try {
+                                            await updateDoc(doc(db, "users", userId, "appointments", apt.id), {
+                                              status: AppointmentStatus.Confirmed,
+                                              cancelledAt: null,
+                                              cancelReason: null,
+                                              cancelledBy: null,
+                                              history: updatedHistory,
+                                            });
+                                            showToast("Agendamento reativado com sucesso!", "success");
+                                          } catch (err) {
+                                            handleFirestoreError(
+                                              err,
+                                              OperationType.UPDATE,
+                                              `users/${userId}/appointments/${apt.id}`,
+                                            );
+                                          }
+                                        }}
+                                      >
+                                        REATIVAR
+                                      </Button>
+                                    </div>
+                                  ) : apt.completed ? (
+                                    <div className="flex items-center gap-1.5">
+                                      <IconButton
+                                        icon={<History size={15} />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setSelectedAptForHistory(apt)}
+                                        title="Ver Histórico e Auditoria"
+                                      />
+                                      <IconButton
+                                        icon={apt.dismissedFromAgenda ? <Eye size={15} className="text-emerald-400" /> : <EyeOff size={15} className="text-slate-400 hover:text-amber-400" />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleToggleDismissAppointment(apt, !apt.dismissedFromAgenda)}
+                                        title={apt.dismissedFromAgenda ? "Restaurar na Tela Principal" : "Remover da Tela Principal (preserva no Histórico)"}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center gap-1.5">
+                                      {clientPhone && (
+                                        <IconButton
+                                          icon={<MessageSquare size={15} />}
+                                          variant="whatsapp"
+                                          size="sm"
+                                          onClick={() => {
+                                            const cleanPhone = clientPhone.replace(/\D/g, "");
+                                            const fullPhone = cleanPhone.startsWith("55") ? cleanPhone : `55${cleanPhone}`;
+                                            const clientName = apt.clientName || c?.name || "Cliente";
+                                            const msg = `Olá ${clientName}! Confirmando seu horário na ${session?.shopName || "Barbearia"} para hoje às ${apt.time} (${s?.name || "Corte"}). Te aguardamos!`;
+                                            window.open(`https://wa.me/${fullPhone}?text=${encodeURIComponent(msg)}`, "_blank");
+                                          }}
+                                          title="WhatsApp do Cliente"
+                                        />
+                                      )}
+                                      <IconButton
+                                        icon={isSendingReminder === apt.id ? (
+                                          <Clock size={15} className="animate-spin" />
+                                        ) : (
+                                          <BellRing size={15} />
+                                        )}
+                                        variant="gold"
+                                        size="sm"
+                                        onClick={() => sendReminder(apt.id)}
+                                        disabled={isSendingReminder === apt.id}
+                                        title="Enviar Lembrete Automático"
+                                      />
+                                      <IconButton
+                                        icon={<Edit3 size={15} className="text-elite-cyan-400 hover:text-elite-cyan-300" />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setEditingApt(apt)}
+                                        title="Editar ou Reagendar Agendamento (sem duplicidades)"
+                                      />
+                                      <IconButton
+                                        icon={<History size={15} />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setSelectedAptForHistory(apt)}
+                                        title="Ver Histórico de Alterações"
+                                      />
+                                      <IconButton
+                                        icon={apt.dismissedFromAgenda ? <Eye size={15} className="text-emerald-400" /> : <EyeOff size={15} className="text-slate-400 hover:text-amber-400" />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleToggleDismissAppointment(apt, !apt.dismissedFromAgenda)}
+                                        title={apt.dismissedFromAgenda ? "Restaurar na Tela Principal" : "Remover da Tela Principal (preserva no Histórico)"}
+                                      />
+                                      <Button
+                                        variant="primary"
+                                        size="sm"
+                                        onClick={() => setFinishingAptId(apt.id)}
+                                      >
+                                        FINALIZAR
+                                      </Button>
+                                      <IconButton
+                                        icon={<XCircle size={15} className="text-rose-400 hover:text-rose-300" />}
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => {
+                                          setCancellingApt(apt);
+                                          setCancelReasonText("");
+                                        }}
+                                        title="Cancelar Agendamento (Preserva Histórico)"
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </div>
+                )}
 
-                  {isSlotOrDateDayOff(session?.unavailableSlots, selectedDate) ? (
-                    <div className="flex items-center gap-2.5 px-3.5 py-2.5 bg-rose-500/10 border border-rose-500/25 rounded-xl text-rose-300 text-xs font-bold">
-                      <Lock size={15} className="text-rose-400 shrink-0" />
-                      <span>Data com <strong>Folga Pontual</strong> ativa. Agendamentos públicos estão desativados para este dia.</span>
-                    </div>
-                  ) : isWeeklyOffDay(session?.businessHours, selectedDate) ? (
-                    <div className="flex items-center gap-2.5 px-3.5 py-2.5 bg-amber-500/10 border border-amber-500/25 rounded-xl text-amber-300 text-xs font-bold">
-                      <Clock size={15} className="text-amber-400 shrink-0" />
-                      <span>Dia <strong>Fora do Expediente Regular</strong>. Barbearia fechada conforme sua escala semanal.</span>
-                    </div>
-                  ) : null}
+                {/* VISUALIZAÇÃO 4: Painel de Histórico Completo de Agendamentos (Requisito 5) */}
+                {agendaMainView === "all_history" && (() => {
+                  const filteredHistory = appointments.filter((a) => {
+                    // Filtro por mês (se preenchido)
+                    if (historyMonthFilter && !a.date.startsWith(historyMonthFilter)) {
+                      return false;
+                    }
 
-                  {/* Resumo Métrico Rápido do Dia */}
-                  {(() => {
-                    const dayApts = appointments.filter((a) => a.date === selectedDate);
-                    const activeApts = dayApts.filter(
-                      (a) =>
-                        !a.completed &&
-                        a.status !== AppointmentStatus.Rejected &&
-                        (a.status as any) !== "cancelled",
-                    );
-                    const completed = dayApts.filter((a) => a.completed).length;
-                    const cancelled = dayApts.filter(
-                      (a) =>
-                        a.status === AppointmentStatus.Rejected ||
-                        (a.status as any) === "cancelled",
-                    ).length;
-                    const pending = activeApts.length;
-                    const totalRevenue = dayApts
-                      .filter(
-                        (a) =>
-                          a.status !== AppointmentStatus.Rejected &&
-                          (a.status as any) !== "cancelled",
-                      )
-                      .reduce((acc, a) => acc + (a.finalPrice || 0), 0);
+                    const isCancelled =
+                      a.status === AppointmentStatus.Rejected ||
+                      (a.status as any) === "cancelled";
 
-                    return (
-                      <div className="space-y-3 pt-3 border-t border-white/5">
-                        <div className="grid grid-cols-4 gap-2 text-center">
-                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
-                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Total</span>
-                            <span className="text-xs sm:text-sm font-black text-white">{dayApts.length}</span>
+                    // Filtro por status
+                    if (historyStatusFilter === "completed" && (!a.completed || isCancelled)) return false;
+                    if (historyStatusFilter === "confirmed" && (a.completed || isCancelled)) return false;
+                    if (historyStatusFilter === "cancelled" && !isCancelled) return false;
+                    if (historyStatusFilter === "dismissed" && !a.dismissedFromAgenda) return false;
+
+                    // Pesquisa
+                    if (historySearchTerm.trim()) {
+                      const term = historySearchTerm.toLowerCase();
+                      const c = clients.find((cl) => cl.id === a.clientId);
+                      const s = services.find((sv) => sv.id === a.serviceId);
+                      const clientMatch = (a.clientName || c?.name || "").toLowerCase().includes(term);
+                      const phoneMatch = (a.clientPhone || c?.phone || "").toLowerCase().includes(term);
+                      const serviceMatch = (s?.name || "").toLowerCase().includes(term);
+                      const dateMatch = formatLocalDateBR(a.date).includes(term) || a.date.includes(term);
+                      const timeMatch = (a.time || "").includes(term);
+                      if (!clientMatch && !phoneMatch && !serviceMatch && !dateMatch && !timeMatch) {
+                        return false;
+                      }
+                    }
+
+                    return true;
+                  }).sort((a, b) => {
+                    const diff = b.date.localeCompare(a.date);
+                    return diff !== 0 ? diff : b.time.localeCompare(a.time);
+                  });
+
+                  const historyTotalRev = filteredHistory
+                    .filter((a) => a.paid && a.finalPrice > 0)
+                    .reduce((acc, a) => acc + a.finalPrice, 0);
+
+                  return (
+                    <div className="space-y-4 animate-in fade-in duration-300">
+                      {/* Top Bar do Histórico Completo */}
+                      <div className="bg-slate-900/80 p-5 rounded-2xl sm:rounded-3xl border border-white/10 space-y-4 shadow-xl">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-black uppercase tracking-widest text-white flex items-center gap-2">
+                              <History size={16} className="text-amber-400" />
+                              Histórico Geral & Auditoria de Agendamentos
+                            </h3>
+                            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5">
+                              {filteredHistory.length} agendamento(s) listado(s) • Nenhuma informação histórica é perdida
+                            </p>
                           </div>
-                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
-                            <span className="text-[8px] font-bold text-elite-cyan-400 uppercase tracking-wider block mb-0.5">Pendentes</span>
-                            <span className="text-xs sm:text-sm font-black text-elite-cyan-400">{pending}</span>
-                          </div>
-                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
-                            <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-wider block mb-0.5">Concluídos</span>
-                            <span className="text-xs sm:text-sm font-black text-emerald-400">{completed}</span>
-                          </div>
-                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
-                            <span className="text-[8px] font-bold text-rose-400 uppercase tracking-wider block mb-0.5">Cancelados</span>
-                            <span className="text-xs sm:text-sm font-black text-rose-400">{cancelled}</span>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1.5 rounded-xl border border-white/10">
+                              <span className="text-[9px] font-black uppercase text-slate-400">Mês:</span>
+                              <input
+                                type="month"
+                                value={historyMonthFilter}
+                                onChange={(e) => setHistoryMonthFilter(e.target.value)}
+                                className="bg-transparent text-xs font-black text-white outline-none cursor-pointer"
+                              />
+                              {historyMonthFilter && (
+                                <button
+                                  type="button"
+                                  onClick={() => setHistoryMonthFilter("")}
+                                  className="text-[9px] text-slate-500 hover:text-white px-1 font-bold"
+                                  title="Ver todos os meses"
+                                >
+                                  Ver Todos
+                                </button>
+                              )}
+                            </div>
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => setShowGlobalAuditModal(true)}
+                              className="text-[10px] font-black uppercase"
+                            >
+                              <ShieldCheck size={14} />
+                              Logs Globais
+                            </Button>
                           </div>
                         </div>
 
-                        {/* Filtros de Status da Agenda */}
-                        <div className="flex items-center gap-1.5 p-1 bg-slate-950/80 rounded-xl border border-white/5">
+                        {/* Métricas Rápidas do Histórico */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center pt-2 border-t border-white/5">
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-slate-400 uppercase tracking-wider block mb-0.5">Total Listados</span>
+                            <span className="text-xs sm:text-sm font-black text-white">{filteredHistory.length}</span>
+                          </div>
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-emerald-400 uppercase tracking-wider block mb-0.5">Receita Paga</span>
+                            <span className="text-xs sm:text-sm font-black text-emerald-400">{formatCurrency(historyTotalRev)}</span>
+                          </div>
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-amber-400 uppercase tracking-wider block mb-0.5">Ocultos da Tela</span>
+                            <span className="text-xs sm:text-sm font-black text-amber-400">{filteredHistory.filter(a => a.dismissedFromAgenda).length}</span>
+                          </div>
+                          <div className="p-2.5 bg-slate-950/60 rounded-xl border border-white/5">
+                            <span className="text-[8px] font-bold text-rose-400 uppercase tracking-wider block mb-0.5">Cancelados</span>
+                            <span className="text-xs sm:text-sm font-black text-rose-400">{filteredHistory.filter(a => a.status === AppointmentStatus.Rejected || (a.status as any) === 'cancelled').length}</span>
+                          </div>
+                        </div>
+
+                        {/* Filtros de Status do Histórico */}
+                        <div className="flex items-center gap-1.5 p-1 bg-slate-950/80 rounded-xl border border-white/5 overflow-x-auto">
                           <button
                             type="button"
-                            onClick={() => setAgendaFilterStatus("all")}
-                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                              agendaFilterStatus === "all"
+                            onClick={() => setHistoryStatusFilter("all")}
+                            className={`flex-1 min-w-[70px] py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              historyStatusFilter === "all"
                                 ? "bg-white/20 text-white shadow-sm"
                                 : "text-slate-400 hover:text-white"
                             }`}
                           >
-                            Todos ({dayApts.length})
+                            Todos
                           </button>
                           <button
                             type="button"
-                            onClick={() => setAgendaFilterStatus("pending")}
-                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                              agendaFilterStatus === "pending"
-                                ? "bg-elite-cyan-500 text-slate-950 shadow-md shadow-elite-cyan-500/20"
+                            onClick={() => setHistoryStatusFilter("completed")}
+                            className={`flex-1 min-w-[80px] py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              historyStatusFilter === "completed"
+                                ? "bg-emerald-500 text-slate-950 shadow-sm"
                                 : "text-slate-400 hover:text-white"
                             }`}
                           >
-                            Em Aberto ({pending})
+                            Concluídos
                           </button>
                           <button
                             type="button"
-                            onClick={() => setAgendaFilterStatus("completed")}
-                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                              agendaFilterStatus === "completed"
-                                ? "bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20"
+                            onClick={() => setHistoryStatusFilter("confirmed")}
+                            className={`flex-1 min-w-[80px] py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              historyStatusFilter === "confirmed"
+                                ? "bg-elite-cyan-500 text-slate-950 shadow-sm"
                                 : "text-slate-400 hover:text-white"
                             }`}
                           >
-                            Concluídos ({completed})
+                            Em Aberto
                           </button>
                           <button
                             type="button"
-                            onClick={() => setAgendaFilterStatus("cancelled")}
-                            className={`flex-1 py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
-                              agendaFilterStatus === "cancelled"
-                                ? "bg-rose-600 text-white shadow-md shadow-rose-600/20"
+                            onClick={() => setHistoryStatusFilter("cancelled")}
+                            className={`flex-1 min-w-[80px] py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              historyStatusFilter === "cancelled"
+                                ? "bg-rose-600 text-white shadow-sm"
                                 : "text-slate-400 hover:text-white"
                             }`}
                           >
-                            Cancelados ({cancelled})
+                            Cancelados
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setHistoryStatusFilter("dismissed")}
+                            className={`flex-1 min-w-[80px] py-1.5 px-2 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              historyStatusFilter === "dismissed"
+                                ? "bg-amber-400 text-slate-950 shadow-sm"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Ocultados
                           </button>
                         </div>
                       </div>
-                    );
-                  })()}
-                </div>
 
-                {/* Campo de Pesquisa em Tempo Real de Cortes / Clientes / Horários */}
-                <div className="relative">
-                  <input
-                    type="text"
-                    placeholder="Pesquisar corte, cliente ou horário na agenda..."
-                    value={agendaSearchTerm}
-                    onChange={(e) => setAgendaSearchTerm(e.target.value)}
-                    className="w-full bg-slate-900/70 border border-white/10 focus:border-elite-cyan-400 rounded-xl sm:rounded-2xl px-4 py-3 pl-10 text-white text-xs font-bold outline-none placeholder-slate-500 shadow-md transition-all"
-                  />
-                  <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                  {agendaSearchTerm && (
-                    <button
-                      type="button"
-                      onClick={() => setAgendaSearchTerm("")}
-                      className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white cursor-pointer"
-                    >
-                      <X size={14} />
-                    </button>
-                  )}
-                </div>
-
-                {/* Lista de Agendamentos */}
-                {(() => {
-                  const dayApts = appointments.filter((a) => a.date === selectedDate);
-                  const filteredAppointments = dayApts
-                    .filter((a) => {
-                      const isCancelled =
-                        a.status === AppointmentStatus.Rejected ||
-                        (a.status as any) === "cancelled";
-
-                      if (agendaFilterStatus === "pending" && (a.completed || isCancelled)) {
-                        return false;
-                      }
-                      if (agendaFilterStatus === "completed" && (!a.completed || isCancelled)) {
-                        return false;
-                      }
-                      if (agendaFilterStatus === "cancelled" && !isCancelled) {
-                        return false;
-                      }
-
-                      if (!agendaSearchTerm.trim()) return true;
-
-                      const c = clients.find((cl) => cl.id === a.clientId);
-                      const s = services.find((sv) => sv.id === a.serviceId);
-                      const term = agendaSearchTerm.toLowerCase();
-                      const clientMatch = (a.clientName || c?.name || "").toLowerCase().includes(term);
-                      const serviceMatch = (s?.name || "").toLowerCase().includes(term);
-                      const timeMatch = (a.time || "").toLowerCase().includes(term);
-
-                      return clientMatch || serviceMatch || timeMatch;
-                    })
-                    .sort((a, b) => a.time.localeCompare(b.time));
-
-                  if (filteredAppointments.length === 0) {
-                    return (
-                      <div className="p-10 text-center bg-slate-900/30 rounded-2xl sm:rounded-3xl border border-dashed border-white/10 space-y-2">
-                        <Calendar size={28} className="mx-auto text-slate-600" />
-                        <p className="font-black uppercase tracking-widest text-[10px] text-slate-500">
-                          {agendaSearchTerm
-                            ? "Nenhum resultado para a pesquisa"
-                            : agendaFilterStatus === "cancelled"
-                              ? "Nenhum agendamento cancelado para este dia"
-                              : agendaFilterStatus === "completed"
-                                ? "Nenhum agendamento concluído para este dia"
-                                : agendaFilterStatus === "pending"
-                                  ? "Nenhum agendamento em aberto para este dia"
-                                  : "Nenhum agendamento registrado para este dia"}
-                        </p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="space-y-3">
-                      {agendaSearchTerm && (
-                        <p className="text-[10px] font-black text-elite-cyan-400 uppercase tracking-wider px-1">
-                          Mostrando {filteredAppointments.length} agendamento(s) para "{agendaSearchTerm}"
-                        </p>
-                      )}
-                      {filteredAppointments.map((apt) => {
-                        const c = clients.find((cl) => cl.id === apt.clientId);
-                        const s = services.find((sv) => sv.id === apt.serviceId);
-                        const isCancelled =
-                          apt.status === AppointmentStatus.Rejected ||
-                          (apt.status as any) === "cancelled";
-                        const clientPhone = apt.clientPhone || c?.phone || "";
-
-                        return (
-                          <div
-                            key={apt.id}
-                            className={`p-4 sm:p-5 rounded-2xl sm:rounded-3xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group shadow-lg transition-all ${
-                              isCancelled
-                                ? "bg-rose-950/20 border border-rose-500/20 opacity-90"
-                                : apt.completed
-                                  ? "bg-emerald-950/20 border border-emerald-500/20"
-                                  : "bg-slate-900/70 border border-white/[0.08] hover:bg-slate-900 hover:border-white/20"
-                            }`}
+                      {/* Busca no Histórico */}
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Buscar no histórico por cliente, telefone, serviço ou data..."
+                          value={historySearchTerm}
+                          onChange={(e) => setHistorySearchTerm(e.target.value)}
+                          className="w-full bg-slate-900/70 border border-white/10 focus:border-amber-400 rounded-xl px-4 py-3 pl-10 text-white text-xs font-bold outline-none placeholder-slate-500 shadow-md transition-all"
+                        />
+                        <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                        {historySearchTerm && (
+                          <button
+                            type="button"
+                            onClick={() => setHistorySearchTerm("")}
+                            className="absolute right-3.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-white cursor-pointer"
                           >
-                            <div className="flex items-center gap-3.5 min-w-0">
-                              <span className="text-2xl sm:text-3xl font-black text-white font-mono shrink-0 tracking-tight">
-                                {apt.time}
-                              </span>
-                              <div className="flex items-center gap-3 min-w-0">
-                                <div className="h-11 w-11 rounded-xl bg-slate-950 border border-elite-red-500/30 overflow-hidden shadow-md flex items-center justify-center shrink-0">
-                                  {c?.photo ? (
-                                    <img
-                                      src={c.photo}
-                                      className="h-full w-full object-cover"
-                                    />
-                                  ) : (
-                                    <UserIcon
-                                      className="text-slate-500"
-                                      size={20}
-                                    />
-                                  )}
-                                </div>
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2">
-                                    <p className="font-black text-sm uppercase text-white truncate leading-tight">
-                                      {apt.clientName || c?.name || "Cliente"}
-                                    </p>
-                                    {isCancelled && (
-                                      <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">
-                                        Cancelado
-                                      </span>
-                                    )}
-                                    {apt.completed && (
-                                      <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                                        Concluído
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="flex items-center gap-2 flex-wrap mt-1">
-                                    <span className="text-[10px] font-black text-elite-cyan-400 uppercase truncate">
-                                      {s?.name || "Corte"}
+                            <X size={14} />
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Lista de Registros do Histórico */}
+                      {filteredHistory.length === 0 ? (
+                        <div className="p-10 text-center bg-slate-900/30 rounded-2xl border border-dashed border-white/10 space-y-2">
+                          <History size={28} className="mx-auto text-slate-600" />
+                          <p className="font-black uppercase tracking-widest text-[10px] text-slate-500">
+                            Nenhum agendamento encontrado para os filtros selecionados
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2.5">
+                          {filteredHistory.map((apt) => {
+                            const c = clients.find((cl) => cl.id === apt.clientId);
+                            const s = services.find((sv) => sv.id === apt.serviceId);
+                            const isCancelled =
+                              apt.status === AppointmentStatus.Rejected ||
+                              (apt.status as any) === "cancelled";
+
+                            return (
+                              <div
+                                key={apt.id}
+                                className={`p-4 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 border shadow-md transition-all ${
+                                  isCancelled
+                                    ? "bg-rose-950/20 border-rose-500/20"
+                                    : apt.completed
+                                      ? "bg-slate-900/80 border-white/[0.08]"
+                                      : "bg-slate-900/60 border-elite-cyan-500/20"
+                                }`}
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <div className="text-center shrink-0 w-16 p-2 bg-slate-950/80 rounded-xl border border-white/5">
+                                    <span className="text-[10px] font-bold text-slate-400 block font-mono">
+                                      {formatLocalDateBR(apt.date).substring(0, 5)}
                                     </span>
-                                    {apt.pricePending ? (
-                                      <Badge variant="warning" size="sm">
-                                        <Clock size={10} />
-                                        Valor a Definir
-                                      </Badge>
-                                    ) : (
+                                    <span className="text-sm font-black text-white font-mono block">
+                                      {apt.time}
+                                    </span>
+                                  </div>
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <p className="font-black text-sm uppercase text-white truncate">
+                                        {apt.clientName || c?.name || "Cliente"}
+                                      </p>
+                                      {isCancelled ? (
+                                        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">
+                                          Cancelado
+                                        </span>
+                                      ) : apt.completed ? (
+                                        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                                          Concluído
+                                        </span>
+                                      ) : (
+                                        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-elite-cyan-500/20 text-elite-cyan-300 border border-elite-cyan-500/30">
+                                          Em Aberto
+                                        </span>
+                                      )}
+                                      {apt.dismissedFromAgenda && (
+                                        <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                          <EyeOff size={10} />
+                                          Oculto da Tela Principal
+                                        </span>
+                                      )}
+                                      {apt.originalDate && (
+                                        <span className="text-[9px] font-bold text-purple-300 bg-purple-500/20 px-2 py-0.5 rounded border border-purple-500/30">
+                                          Reagendado
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2 flex-wrap mt-1">
+                                      <span className="text-[10px] font-black text-elite-cyan-400 uppercase">
+                                        {s?.name || "Corte"}
+                                      </span>
                                       <span className="text-[11px] font-black text-amber-400 font-mono">
                                         {formatCurrency(apt.finalPrice)}
                                       </span>
-                                    )}
-                                    {isCancelled && apt.cancelReason && (
-                                      <span className="text-[10px] text-rose-300/80 truncate max-w-[200px]" title={apt.cancelReason}>
-                                        • {apt.cancelReason}
+                                      <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${apt.paid ? "bg-emerald-500/10 text-emerald-400" : "bg-amber-500/10 text-amber-400"}`}>
+                                        {apt.paid ? "Pago" : "Pendente"}
                                       </span>
-                                    )}
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            </div>
 
-                            <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
-                              {finishingAptId === apt.id ? (
-                                <div className="flex flex-col sm:flex-row items-end sm:items-center gap-2 p-2.5 bg-slate-950/95 rounded-2xl border border-amber-400/40 shadow-2xl animate-in slide-in-from-right duration-200">
-                                  <div className="flex items-center gap-1.5 w-full sm:w-auto">
-                                    <span className="text-[10px] font-black text-amber-400 uppercase pl-1">
-                                      R$
-                                    </span>
-                                    <input
-                                      type="number"
-                                      step="0.01"
-                                      value={
-                                        finishingPriceMap[apt.id] !== undefined
-                                          ? finishingPriceMap[apt.id]
-                                          : (apt.pricePending
-                                              ? (s?.price ? String(s.price) : "")
-                                              : (apt.finalPrice > 0 ? String(apt.finalPrice) : (s?.price ? String(s.price) : "")))
-                                      }
-                                      onChange={(e) =>
-                                        setFinishingPriceMap({
-                                          ...finishingPriceMap,
-                                          [apt.id]: e.target.value,
-                                        })
-                                      }
-                                      placeholder={s?.price ? `Padrão: ${s.price}` : "0.00"}
-                                      className="w-24 bg-slate-900 border border-white/10 focus:border-amber-400 text-white text-xs font-black px-2.5 py-1.5 rounded-xl outline-none"
-                                      autoFocus
-                                    />
-                                    {s?.price && (
-                                      <button
-                                        type="button"
-                                        onClick={() =>
-                                          setFinishingPriceMap({
-                                            ...finishingPriceMap,
-                                            [apt.id]: String(s.price),
-                                          })
-                                        }
-                                        className="text-[9px] font-black uppercase px-2 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-amber-400 rounded-lg border border-white/5 cursor-pointer"
-                                        title={`Usar valor padrão de R$ ${s.price}`}
-                                      >
-                                        R${s.price}
-                                      </button>
-                                    )}
-                                  </div>
-
-                                  <div className="flex items-center gap-1.5 w-full sm:w-auto justify-end">
-                                    <Button
-                                      variant="success"
-                                      size="sm"
-                                      onClick={() => {
-                                        const rawVal = finishingPriceMap[apt.id];
-                                        const valNum = rawVal !== undefined && rawVal !== ""
-                                          ? Number(rawVal)
-                                          : (apt.finalPrice > 0 ? apt.finalPrice : (s?.price || 0));
-                                        toggleCompleteFlow(apt.id, true, isNaN(valNum) ? 0 : valNum);
-                                      }}
-                                    >
-                                      RECEBIDO
-                                    </Button>
-                                    <Button
-                                      variant="warning"
-                                      size="sm"
-                                      onClick={() => {
-                                        const rawVal = finishingPriceMap[apt.id];
-                                        const valNum = rawVal !== undefined && rawVal !== ""
-                                          ? Number(rawVal)
-                                          : (apt.finalPrice > 0 ? apt.finalPrice : (s?.price || 0));
-                                        toggleCompleteFlow(apt.id, false, isNaN(valNum) ? 0 : valNum);
-                                      }}
-                                    >
-                                      DÉBITO
-                                    </Button>
-                                    <IconButton
-                                      icon={<X size={15} />}
-                                      variant="ghost"
-                                      size="sm"
-                                      onClick={() => setFinishingAptId(null)}
-                                      title="Cancelar"
-                                    />
-                                  </div>
-                                </div>
-                              ) : isCancelled ? (
-                                <div className="flex items-center gap-1.5">
+                                <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
                                   <IconButton
                                     icon={<History size={15} />}
                                     variant="ghost"
                                     size="sm"
                                     onClick={() => setSelectedAptForHistory(apt)}
-                                    title="Ver Histórico de Alterações"
+                                    title="Ver Histórico e Linha do Tempo de Auditoria"
                                   />
-                                  <Button
-                                    variant="secondary"
-                                    size="sm"
-                                    onClick={async () => {
-                                      if (!auth.currentUser) return;
-                                      const userId = effectiveUserId;
-                                      if (!userId) return;
-                                      const nowIso = new Date().toISOString();
-                                      const historyEntry: AppointmentHistoryEntry = {
-                                        id: `${Date.now()}_reactivated`,
-                                        action: "confirmed",
-                                        timestamp: nowIso,
-                                        actor: auth.currentUser.displayName || "Barbeiro",
-                                        details: "Agendamento reativado na agenda",
-                                      };
-                                      const updatedHistory = [
-                                        ...(Array.isArray(apt.history) ? apt.history : []),
-                                        historyEntry,
-                                      ];
-                                      setAppointments((prev) =>
-                                        prev.map((a) =>
-                                          a.id === apt.id
-                                            ? {
-                                                ...a,
-                                                status: AppointmentStatus.Confirmed,
-                                                cancelledAt: undefined,
-                                                cancelReason: undefined,
-                                                cancelledBy: undefined,
-                                                history: updatedHistory,
-                                              }
-                                            : a,
-                                        ),
-                                      );
-                                      try {
-                                        await updateDoc(doc(db, "users", userId, "appointments", apt.id), {
-                                          status: AppointmentStatus.Confirmed,
-                                          cancelledAt: null,
-                                          cancelReason: null,
-                                          cancelledBy: null,
-                                          history: updatedHistory,
-                                        });
-                                        showToast("Agendamento reativado com sucesso!", "success");
-                                      } catch (err) {
-                                        handleFirestoreError(
-                                          err,
-                                          OperationType.UPDATE,
-                                          `users/${userId}/appointments/${apt.id}`,
-                                        );
-                                      }
-                                    }}
-                                  >
-                                    REATIVAR
-                                  </Button>
-                                </div>
-                              ) : (
-                                <div className="flex items-center gap-1.5">
-                                  {clientPhone && (
+                                  {!apt.completed && !isCancelled && (
                                     <IconButton
-                                      icon={<MessageSquare size={15} />}
-                                      variant="whatsapp"
+                                      icon={<Edit3 size={15} className="text-elite-cyan-400" />}
+                                      variant="ghost"
                                       size="sm"
-                                      onClick={() => {
-                                        const cleanPhone = clientPhone.replace(/\D/g, "");
-                                        const fullPhone = cleanPhone.startsWith("55") ? cleanPhone : `55${cleanPhone}`;
-                                        const clientName = apt.clientName || c?.name || "Cliente";
-                                        const msg = `Olá ${clientName}! Confirmando seu horário na ${session?.shopName || "Barbearia"} para hoje às ${apt.time} (${s?.name || "Corte"}). Te aguardamos!`;
-                                        window.open(`https://wa.me/${fullPhone}?text=${encodeURIComponent(msg)}`, "_blank");
-                                      }}
-                                      title="WhatsApp do Cliente"
+                                      onClick={() => setEditingApt(apt)}
+                                      title="Editar / Reagendar Agendamento"
                                     />
                                   )}
                                   <IconButton
-                                    icon={isSendingReminder === apt.id ? (
-                                      <Clock size={15} className="animate-spin" />
-                                    ) : (
-                                      <BellRing size={15} />
-                                    )}
-                                    variant="gold"
-                                    size="sm"
-                                    onClick={() => sendReminder(apt.id)}
-                                    disabled={isSendingReminder === apt.id}
-                                    title="Enviar Lembrete Automático"
-                                  />
-                                  <IconButton
-                                    icon={<History size={15} />}
+                                    icon={apt.dismissedFromAgenda ? <Eye size={15} className="text-emerald-400" /> : <EyeOff size={15} className="text-slate-400 hover:text-amber-400" />}
                                     variant="ghost"
                                     size="sm"
-                                    onClick={() => setSelectedAptForHistory(apt)}
-                                    title="Ver Histórico de Alterações"
+                                    onClick={() => handleToggleDismissAppointment(apt, !apt.dismissedFromAgenda)}
+                                    title={apt.dismissedFromAgenda ? "Restaurar na Tela Principal" : "Remover da Tela Principal (mantém no Histórico)"}
                                   />
-                                  <Button
-                                    variant="primary"
-                                    size="sm"
-                                    onClick={() => setFinishingAptId(apt.id)}
-                                  >
-                                    FINALIZAR
-                                  </Button>
-                                  <IconButton
-                                    icon={<XCircle size={15} className="text-rose-400 hover:text-rose-300" />}
-                                    variant="ghost"
-                                    size="sm"
-                                    onClick={() => {
-                                      setCancellingApt(apt);
-                                      setCancelReasonText("");
-                                    }}
-                                    title="Cancelar Agendamento (Preserva Histórico)"
-                                  />
+                                  {isCancelled && (
+                                    <Button
+                                      variant="secondary"
+                                      size="sm"
+                                      onClick={async () => {
+                                        if (!auth.currentUser || !effectiveUserId) return;
+                                        const nowIso = new Date().toISOString();
+                                        const historyEntry: AppointmentHistoryEntry = {
+                                          id: `${Date.now()}_reactivated`,
+                                          action: "confirmed",
+                                          timestamp: nowIso,
+                                          actor: auth.currentUser.displayName || "Barbeiro",
+                                          details: "Agendamento reativado via Histórico Completo",
+                                        };
+                                        const updatedHistory = [
+                                          ...(Array.isArray(apt.history) ? apt.history : []),
+                                          historyEntry,
+                                        ];
+                                        setAppointments((prev) =>
+                                          prev.map((a) =>
+                                            a.id === apt.id
+                                              ? { ...a, status: AppointmentStatus.Confirmed, cancelledAt: undefined, cancelReason: undefined, history: updatedHistory }
+                                              : a
+                                          )
+                                        );
+                                        await updateDoc(doc(db, "users", effectiveUserId, "appointments", apt.id), {
+                                          status: AppointmentStatus.Confirmed,
+                                          cancelledAt: null,
+                                          cancelReason: null,
+                                          history: updatedHistory,
+                                        });
+                                        showToast("Agendamento reativado com sucesso!", "success");
+                                      }}
+                                    >
+                                      REATIVAR
+                                    </Button>
+                                  )}
                                 </div>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                     </div>
                   );
                 })()}

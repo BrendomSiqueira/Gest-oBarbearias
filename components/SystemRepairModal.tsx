@@ -69,6 +69,7 @@ export const SystemRepairModal: React.FC<SystemRepairModalProps> = ({
   const [auditStats, setAuditStats] = useState<{
     orphanedApts: Appointment[];
     duplicateClients: { name: string; count: number }[];
+    slotConflicts: { date: string; time: string; count: number; appointments: Appointment[] }[];
     totalCheckedApts: number;
     totalCheckedClients: number;
   } | null>(null);
@@ -642,9 +643,27 @@ export const SystemRepairModal: React.FC<SystemRepairModalProps> = ({
       return !hasClient && !hasDirectName;
     });
 
+    // Check conflicting active slots (same date and time among active appointments)
+    const slotMap = new Map<string, Appointment[]>();
+    appointments.forEach((a) => {
+      if (a.status !== "rejected" && (a.status as any) !== "cancelled") {
+        const key = `${a.date}_${a.time}`;
+        if (!slotMap.has(key)) slotMap.set(key, []);
+        slotMap.get(key)!.push(a);
+      }
+    });
+    const conflicts: { date: string; time: string; count: number; appointments: Appointment[] }[] = [];
+    slotMap.forEach((apts, key) => {
+      if (apts.length > 1) {
+        const [date, time] = key.split("_");
+        conflicts.push({ date, time, count: apts.length, appointments: apts });
+      }
+    });
+
     setAuditStats({
       orphanedApts: orphans,
       duplicateClients: duplicates,
+      slotConflicts: conflicts,
       totalCheckedApts: appointments.length,
       totalCheckedClients: clients.length,
     });
@@ -1237,16 +1256,42 @@ export const SystemRepairModal: React.FC<SystemRepairModalProps> = ({
                 </div>
               )}
 
+              {auditStats && auditStats.slotConflicts && auditStats.slotConflicts.length > 0 && (
+                <div className="p-4 bg-purple-500/10 border border-purple-500/20 rounded-2xl space-y-2">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={16} className="text-purple-400" />
+                    <h5 className="text-xs font-black text-purple-400 uppercase">
+                      Conflitos de Horários Duplicados Identificados ({auditStats.slotConflicts.length})
+                    </h5>
+                  </div>
+                  <div className="space-y-1.5 pt-1">
+                    {auditStats.slotConflicts.map((sc, i) => (
+                      <div key={i} className="text-xs text-slate-300 bg-slate-950/60 p-2.5 rounded-xl border border-white/5 flex items-center justify-between flex-wrap gap-2">
+                        <span><strong>{sc.date.split("-").reverse().join("/")} às {sc.time}</strong> ({sc.count} agendamentos no mesmo horário)</span>
+                        <div className="flex gap-1">
+                          {sc.appointments.map(a => (
+                            <span key={a.id} className="text-[10px] px-2 py-0.5 bg-white/10 rounded font-mono text-slate-300">
+                              {a.clientName || "Cliente"} ({a.status})
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {auditStats &&
                 auditStats.orphanedApts.length === 0 &&
-                auditStats.duplicateClients.length === 0 && (
+                auditStats.duplicateClients.length === 0 &&
+                (!auditStats.slotConflicts || auditStats.slotConflicts.length === 0) && (
                   <div className="p-6 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-center space-y-2">
                     <CheckCircle2 size={32} className="text-emerald-400 mx-auto" />
                     <h5 className="text-sm font-black text-emerald-400 uppercase">
                       Integridade dos Dados Impecável!
                     </h5>
                     <p className="text-xs text-slate-300">
-                      Todos os agendamentos estão devidamente vinculados aos seus respectivos clientes e não foram encontradas inconsistências.
+                      Todos os agendamentos estão devidamente vinculados aos seus respectivos clientes, sem duplicidades e com datas íntegras.
                     </p>
                   </div>
                 )}
