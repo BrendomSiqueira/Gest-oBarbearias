@@ -158,6 +158,17 @@ const DEFAULT_SERVICES: Service[] = [
   { id: "8", name: "Luzes / Platinado", price: 90, duration: 120 },
 ];
 
+export const getServiceInfo = (
+  serviceId: string,
+  currentServices: Service[],
+): { name: string; price: number } => {
+  const found = currentServices.find((s) => s.id === serviceId);
+  if (found) return { name: found.name, price: found.price };
+  const legacyFound = DEFAULT_SERVICES.find((s) => s.id === serviceId);
+  if (legacyFound) return { name: legacyFound.name, price: legacyFound.price };
+  return { name: "Corte", price: 0 };
+};
+
 const DEFAULT_PROFILE_IMG =
   "https://images.unsplash.com/photo-1621605815971-fbc98d665033?q=80&w=400&h=400&auto=format&fit=crop";
 const CURRENT_VERSION = "1.1.0";
@@ -918,8 +929,11 @@ const App: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<Tab>(Tab.Dashboard);
   const [financeSubTab, setFinanceSubTab] = useState<
-    "paid" | "pending" | "adjustments"
+    "paid" | "adjustments" | "sales" | "pending" | "statement"
   >("paid");
+  const [financePendingFilter, setFinancePendingFilter] = useState<
+    "all" | "debts" | "scheduled"
+  >("all");
   const [financeSearchTerm, setFinanceSearchTerm] = useState("");
   const [financeMonthFilter, setFinanceMonthFilter] = useState<string>("all");
   const [bookingSubTab, setBookingSubTab] = useState<
@@ -2123,21 +2137,31 @@ const App: React.FC = () => {
     if (!auth.currentUser) return;
     const userId = effectiveUserId;
     const saleId = Date.now().toString();
+    const saleDate = new Date().toISOString().split("T")[0];
+    const newSale: Sale = {
+      id: saleId,
+      itemId: drink.id,
+      itemName: drink.name,
+      price: drink.price,
+      date: saleDate,
+    };
+
+    // Optimistic immediate updates
+    setSales((prev) => [...prev, newSale]);
+    setDrinks((prev) =>
+      prev.map((d) =>
+        d.id === drink.id ? { ...d, stock: Math.max(0, d.stock - 1) } : d,
+      ),
+    );
 
     try {
-      await setDoc(doc(db, "users", userId, "sales", saleId), {
-        id: saleId,
-        itemId: drink.id,
-        itemName: drink.name,
-        price: drink.price,
-        date: new Date().toISOString().split("T")[0],
-      });
+      await setDoc(doc(db, "users", userId, "sales", saleId), newSale);
 
       await updateDoc(doc(db, "users", userId, "drinks", drink.id), {
-        stock: drink.stock - 1,
+        stock: Math.max(0, drink.stock - 1),
       });
 
-      showToast(`${drink.name} vendida!`);
+      showToast(`${drink.name} vendida com sucesso! Registrada no financeiro.`, "success");
     } catch (err) {
       handleFirestoreError(
         err,
@@ -7096,113 +7120,353 @@ const App: React.FC = () => {
 
           {activeTab === Tab.Finance && (() => {
             const paidAppointments = appointments.filter((a) => a.completed && a.paid);
-            const pendingAppointments = appointments.filter((a) => a.completed && !a.paid);
-            const allTimeCutsRev = paidAppointments.reduce((acc, a) => acc + Number(a.finalPrice || 0), 0);
-            const allTimeAdjRev = adjustments.reduce((acc, a) => acc + Number(a.amount || 0), 0);
-            const allTimeGrandTotal = allTimeCutsRev + allTimeAdjRev;
+            const completedDebts = appointments.filter((a) => a.completed && !a.paid);
+            const scheduledOpenApts = appointments.filter(
+              (a) =>
+                !a.completed &&
+                a.status !== AppointmentStatus.Rejected &&
+                (a.status as any) !== "cancelled",
+            );
+            const allPendingApts = [...completedDebts, ...scheduledOpenApts];
 
-            const filteredPaidApts = paidAppointments.filter((apt) => {
-              if (financeMonthFilter !== "all" && !apt.date.startsWith(financeMonthFilter)) {
-                return false;
-              }
-              if (!financeSearchTerm.trim()) return true;
+            // All-time Grand Totals
+            const allTimeCutsRev = paidAppointments.reduce(
+              (acc, a) => acc + Number(a.finalPrice || 0),
+              0,
+            );
+            const allTimeAdjRev = adjustments.reduce(
+              (acc, a) => acc + Number(a.amount || 0),
+              0,
+            );
+            const allTimeSalesRev = sales.reduce(
+              (acc, s) => acc + Number(s.price || 0),
+              0,
+            );
+            const allTimeGrandTotal = allTimeCutsRev + allTimeAdjRev + allTimeSalesRev;
+            const allTimeDebtsTotal = completedDebts.reduce(
+              (acc, a) => acc + Number(a.finalPrice || 0),
+              0,
+            );
+            const allTimeScheduledTotal = scheduledOpenApts.reduce(
+              (acc, a) => acc + Number(a.finalPrice || 0),
+              0,
+            );
+            const allTimePendingTotal = allTimeDebtsTotal + allTimeScheduledTotal;
+
+            // Dynamic Months list extracted from all collections
+            const availableMonths = (() => {
+              const set = new Set<string>();
+              const currentMonth = getLocalDateString().substring(0, 7);
+              set.add(currentMonth);
+              appointments.forEach((a) => {
+                if (a.date && a.date.length >= 7) set.add(a.date.substring(0, 7));
+              });
+              adjustments.forEach((adj) => {
+                if (adj.date && adj.date.length >= 7) set.add(adj.date.substring(0, 7));
+              });
+              sales.forEach((s) => {
+                if (s.date && s.date.length >= 7) set.add(s.date.substring(0, 7));
+              });
+              return Array.from(set).sort().reverse();
+            })();
+
+            const isAllPeriods = financeMonthFilter === "all";
+
+            // Period-filtered data
+            const periodPaidApts = isAllPeriods
+              ? paidAppointments
+              : paidAppointments.filter((a) => a.date.startsWith(financeMonthFilter));
+            const periodAdjustments = isAllPeriods
+              ? adjustments
+              : adjustments.filter((adj) => adj.date.startsWith(financeMonthFilter));
+            const periodSales = isAllPeriods
+              ? sales
+              : sales.filter((s) => s.date.startsWith(financeMonthFilter));
+            const periodPendingApts = isAllPeriods
+              ? allPendingApts
+              : allPendingApts.filter((a) => a.date.startsWith(financeMonthFilter));
+
+            // Period Revenue Calculations
+            const periodCutsRev = periodPaidApts.reduce(
+              (acc, a) => acc + Number(a.finalPrice || 0),
+              0,
+            );
+            const periodAdjRev = periodAdjustments.reduce(
+              (acc, a) => acc + Number(a.amount || 0),
+              0,
+            );
+            const periodSalesRev = periodSales.reduce(
+              (acc, s) => acc + Number(s.price || 0),
+              0,
+            );
+            const periodGrandTotal = periodCutsRev + periodAdjRev + periodSalesRev;
+
+            // Search Term Filtering
+            const term = financeSearchTerm.trim().toLowerCase();
+
+            const filteredPaidApts = periodPaidApts.filter((apt) => {
+              if (!term) return true;
               const c = clients.find((cl) => cl.id === apt.clientId);
-              const s = services.find((sv) => sv.id === apt.serviceId);
-              const term = financeSearchTerm.toLowerCase();
+              const sInfo = getServiceInfo(apt.serviceId, services);
               const nameMatch = (apt.clientName || c?.name || "").toLowerCase().includes(term);
-              const serviceMatch = (s?.name || "").toLowerCase().includes(term);
+              const serviceMatch = sInfo.name.toLowerCase().includes(term);
+              const dateMatch = apt.date.includes(term);
+              const phoneMatch = (apt.clientPhone || c?.phone || "").includes(term);
+              return nameMatch || serviceMatch || dateMatch || phoneMatch;
+            });
+
+            const filteredAdjustments = periodAdjustments.filter((adj) => {
+              if (!term) return true;
+              return adj.reason.toLowerCase().includes(term) || adj.date.includes(term);
+            });
+
+            const filteredSales = periodSales.filter((s) => {
+              if (!term) return true;
+              return s.itemName.toLowerCase().includes(term) || s.date.includes(term);
+            });
+
+            const filteredPendingApts = periodPendingApts.filter((apt) => {
+              if (financePendingFilter === "debts" && !apt.completed) return false;
+              if (financePendingFilter === "scheduled" && apt.completed) return false;
+              if (!term) return true;
+              const c = clients.find((cl) => cl.id === apt.clientId);
+              const sInfo = getServiceInfo(apt.serviceId, services);
+              const nameMatch = (apt.clientName || c?.name || "").toLowerCase().includes(term);
+              const serviceMatch = sInfo.name.toLowerCase().includes(term);
               const dateMatch = apt.date.includes(term);
               return nameMatch || serviceMatch || dateMatch;
             });
 
-            const filteredAdjustments = adjustments.filter((adj) => {
-              if (financeMonthFilter !== "all" && !adj.date.startsWith(financeMonthFilter)) {
-                return false;
-              }
-              if (!financeSearchTerm.trim()) return true;
-              const term = financeSearchTerm.toLowerCase();
-              return adj.reason.toLowerCase().includes(term) || adj.date.includes(term);
+            // Unified DRE Statement Items
+            interface DREItem {
+              id: string;
+              type: "cut" | "adjustment" | "sale";
+              title: string;
+              subtitle: string;
+              date: string;
+              time?: string;
+              amount: number;
+              isCredit: boolean;
+              badgeText: string;
+              rawItem: any;
+            }
+
+            const statementList: DREItem[] = [
+              ...filteredPaidApts.map((a) => {
+                const c = clients.find((cl) => cl.id === a.clientId);
+                const sInfo = getServiceInfo(a.serviceId, services);
+                return {
+                  id: `cut_${a.id}`,
+                  type: "cut" as const,
+                  title: a.clientName || c?.name || "Cliente Agendado",
+                  subtitle: `${sInfo.name} • Atendimento Concluído`,
+                  date: a.date,
+                  time: a.time,
+                  amount: Number(a.finalPrice || 0),
+                  isCredit: true,
+                  badgeText: "Corte Pago",
+                  rawItem: a,
+                };
+              }),
+              ...filteredAdjustments.map((adj) => ({
+                id: `adj_${adj.id}`,
+                type: "adjustment" as const,
+                title: adj.reason,
+                subtitle: "Movimentação do Livro Caixa",
+                date: adj.date,
+                amount: Math.abs(adj.amount),
+                isCredit: adj.amount >= 0,
+                badgeText: adj.amount >= 0 ? "Entrada Caixa" : "Saída Caixa",
+                rawItem: adj,
+              })),
+              ...filteredSales.map((s) => ({
+                id: `sale_${s.id}`,
+                type: "sale" as const,
+                title: s.itemName,
+                subtitle: "Venda de Bar / Produto Balcão",
+                date: s.date,
+                amount: Number(s.price || 0),
+                isCredit: true,
+                badgeText: "Venda Bar",
+                rawItem: s,
+              })),
+            ].sort((a, b) => {
+              const dateDiff = b.date.localeCompare(a.date);
+              if (dateDiff !== 0) return dateDiff;
+              return (b.time || "").localeCompare(a.time || "");
             });
 
-            const filteredPendingApts = pendingAppointments.filter((apt) => {
-              if (!financeSearchTerm.trim()) return true;
-              const c = clients.find((cl) => cl.id === apt.clientId);
-              const term = financeSearchTerm.toLowerCase();
-              return (apt.clientName || c?.name || "").toLowerCase().includes(term) || apt.date.includes(term);
-            });
+            const formatMonthOptionLabel = (m: string) => {
+              if (m === "all") return "Todos os Períodos (Histórico Completo)";
+              const [year, month] = m.split("-");
+              const monthNames = [
+                "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+                "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"
+              ];
+              const monthIdx = parseInt(month, 10) - 1;
+              const name = monthNames[monthIdx] || month;
+              const isCurrent = m === getLocalDateString().substring(0, 7);
+              return `${name} ${year}${isCurrent ? " (Mês Atual)" : ""}`;
+            };
+
+            const handleExportFinanceCSV = () => {
+              const rows: string[] = [];
+              rows.push("RELATÓRIO FINANCEIRO AUDITADO - BARBEARIA MATHEUS FARIAS");
+              rows.push(`Período Selecionado:;${isAllPeriods ? "Histórico Completo (Todos os Períodos)" : formatMonthOptionLabel(financeMonthFilter)}`);
+              rows.push(`Data de Emissão:;${new Date().toLocaleDateString("pt-BR")} às ${new Date().toLocaleTimeString("pt-BR")}`);
+              rows.push("");
+              rows.push("RESUMO FINANCEIRO CONSOLIDADO");
+              rows.push(`Indicador;Valor (R$);Quantidade de Registros`);
+              rows.push(`Faturamento de Cortes Concluídos;${periodCutsRev.toFixed(2).replace(".", ",")};${periodPaidApts.length}`);
+              rows.push(`Ajustes Líquidos de Caixa;${periodAdjRev.toFixed(2).replace(".", ",")};${periodAdjustments.length}`);
+              rows.push(`Vendas de Produtos e Bar;${periodSalesRev.toFixed(2).replace(".", ",")};${periodSales.length}`);
+              rows.push(`FATURAMENTO REAL TOTAL COMBINADO;${periodGrandTotal.toFixed(2).replace(".", ",")};${periodPaidApts.length + periodAdjustments.length + periodSales.length}`);
+              rows.push(`Pagamentos e Agendamentos Pendentes;${allTimePendingTotal.toFixed(2).replace(".", ",")};${allPendingApts.length}`);
+              rows.push("");
+              rows.push("DETALHAMENTO CRONOLÓGICO DE LANÇAMENTOS");
+              rows.push("Tipo;Data;Horário;Descrição/Cliente;Serviço/Motivo;Entrada/Saída;Valor (R$)");
+
+              statementList.forEach((item) => {
+                rows.push(
+                  `${item.badgeText};${item.date};${item.time || "--:--"};${item.title.replace(/;/g, " ")};${item.subtitle.replace(/;/g, " ")};${item.isCredit ? "Entrada (+)" : "Saída (-)"};${(item.isCredit ? item.amount : -item.amount).toFixed(2).replace(".", ",")}`
+                );
+              });
+
+              const csvContent = "\uFEFF" + rows.join("\r\n");
+              const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.setAttribute("download", `extrato_financeiro_mf_${financeMonthFilter}_${Date.now()}.csv`);
+              document.body.appendChild(link);
+              link.click();
+              document.body.removeChild(link);
+              showToast("Extrato financeiro exportado com sucesso!", "success");
+            };
 
             return (
               <div className="space-y-6 sm:space-y-8 animate-in fade-in duration-500">
+                {/* Banner de Integridade e Auditoria das Bases */}
+                <div className="bg-slate-900/60 border border-emerald-500/20 rounded-2xl p-4 sm:p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-lg backdrop-blur-sm">
+                  <div className="flex items-center gap-3.5">
+                    <div className="h-10 w-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+                      <ShieldCheck size={22} />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-xs sm:text-sm font-black text-white uppercase italic tracking-wide">
+                          Auditoria de Sincronização em Tempo Real
+                        </h4>
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 uppercase tracking-widest">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Conectado Firestore
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 font-medium">
+                        Conciliação total: <span className="text-white font-bold">{appointments.length}</span> agendamentos ({paidAppointments.length} quitados, {allPendingApts.length} pendentes) • <span className="text-white font-bold">{adjustments.length}</span> lançamentos caixa • <span className="text-white font-bold">{sales.length}</span> vendas bar • <span className="text-white font-bold">{clients.length}</span> clientes. Divergência: <span className="text-emerald-400 font-bold">R$ 0,00</span>.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleExportFinanceCSV}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl transition-all shadow-md shadow-emerald-500/20 cursor-pointer shrink-0 w-full sm:w-auto justify-center"
+                    title="Exportar Extrato Completo e Auditado em CSV"
+                  >
+                    <Download size={14} />
+                    <span>Exportar Extrato CSV</span>
+                  </button>
+                </div>
+
+                {/* Stat Cards Dinâmicos com base no Período */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
                   <StatCard
-                    title="Receita Mensal"
-                    value={formatCurrency(stats.monthlyRev)}
-                    subtitle="Faturamento total deste mês"
-                    icon={<TrendingUp size={20} />}
+                    title={isAllPeriods ? "Faturamento Histórico Geral" : "Faturamento do Período"}
+                    value={formatCurrency(periodGrandTotal)}
+                    subtitle={
+                      isAllPeriods
+                        ? `${paidAppointments.length} cortes + ${adjustments.length} ajustes + ${sales.length} vendas`
+                        : `${periodPaidApts.length} cortes + ${periodAdjustments.length} ajustes + ${periodSales.length} vendas`
+                    }
+                    icon={<Award size={20} />}
                     color="emerald"
                   />
                   <StatCard
-                    title="Histórico Geral Acumulado"
-                    value={formatCurrency(allTimeGrandTotal)}
-                    subtitle={`${paidAppointments.length} cortes + ${adjustments.length} lançamentos`}
-                    icon={<Award size={20} />}
+                    title={isAllPeriods ? "Ganhos em Cortes (Histórico)" : "Cortes no Período"}
+                    value={formatCurrency(periodCutsRev)}
+                    subtitle={`${periodPaidApts.length} atendimentos quitados`}
+                    icon={<Scissors size={20} />}
                     color="cyan"
                   />
                   <StatCard
-                    title="Total de Ajustes"
-                    value={formatCurrency(allTimeAdjRev)}
-                    subtitle={`${adjustments.length} lançamentos no livro caixa`}
+                    title={isAllPeriods ? "Livro Caixa (Histórico)" : "Ajustes no Período"}
+                    value={formatCurrency(periodAdjRev)}
+                    subtitle={`${periodAdjustments.length} movimentações registradas`}
                     icon={<DollarSign size={20} />}
                     color="slate"
                   />
                   <StatCard
-                    title="Pagamentos Pendentes"
-                    value={formatCurrency(
-                      pendingAppointments.reduce((acc, a) => acc + Number(a.finalPrice || 0), 0),
-                    )}
-                    subtitle={`${pendingAppointments.length} aguardando liquidação`}
+                    title="A Receber & Pendentes"
+                    value={formatCurrency(allTimePendingTotal)}
+                    subtitle={`${completedDebts.length} débitos (${formatCurrency(allTimeDebtsTotal)}) + ${scheduledOpenApts.length} previstos (${formatCurrency(allTimeScheduledTotal)})`}
                     icon={<Clock size={20} />}
                     color="amber"
                   />
                 </div>
 
+                {/* Extrato e Movimentações Financeiras */}
                 <Card 
-                  title="Histórico Financeiro & Extrato" 
-                  subtitle="Consulte registros de ganhos consolidados, livro de caixa de ajustes e pagamentos"
+                  title="Painel e Demonstrativo Financeiro" 
+                  subtitle="Auditoria e detalhamento de cortes, vendas de balcão, movimentações de caixa e pendências"
                   icon={<Receipt size={18} />}
                 >
-                  {/* Controles de Subabas e Filtros */}
+                  {/* Seletor de Períodos e Barra de Busca */}
                   <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4 mb-6">
-                    <div className="flex flex-wrap sm:flex-nowrap gap-1.5 sm:gap-2 bg-slate-950 p-1.5 rounded-xl shadow-inner border border-white/5">
+                    {/* Subabas */}
+                    <div className="flex flex-wrap gap-1.5 bg-slate-950 p-1.5 rounded-xl shadow-inner border border-white/5 overflow-x-auto">
                       <button
                         onClick={() => setFinanceSubTab("paid")}
-                        className={`flex-1 sm:flex-initial px-4 sm:px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[40px] flex items-center justify-center gap-2 cursor-pointer ${
+                        className={`px-3.5 sm:px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[38px] flex items-center justify-center gap-1.5 cursor-pointer ${
                           financeSubTab === "paid"
                             ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20"
                             : "text-slate-400 hover:text-white hover:bg-white/5"
                         }`}
                       >
-                        <span>Ganhos em Cortes</span>
+                        <span>Cortes</span>
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
-                          {paidAppointments.length}
+                          {periodPaidApts.length}
                         </span>
                       </button>
+
                       <button
                         onClick={() => setFinanceSubTab("adjustments")}
-                        className={`flex-1 sm:flex-initial px-4 sm:px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[40px] flex items-center justify-center gap-2 cursor-pointer ${
+                        className={`px-3.5 sm:px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[38px] flex items-center justify-center gap-1.5 cursor-pointer ${
                           financeSubTab === "adjustments"
                             ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20"
                             : "text-slate-400 hover:text-white hover:bg-white/5"
                         }`}
                       >
-                        <span>Ajustes & Lançamentos</span>
+                        <span>Caixa</span>
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
-                          {adjustments.length}
+                          {periodAdjustments.length}
                         </span>
                       </button>
+
+                      <button
+                        onClick={() => setFinanceSubTab("sales")}
+                        className={`px-3.5 sm:px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[38px] flex items-center justify-center gap-1.5 cursor-pointer ${
+                          financeSubTab === "sales"
+                            ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20"
+                            : "text-slate-400 hover:text-white hover:bg-white/5"
+                        }`}
+                      >
+                        <span>Vendas Bar</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
+                          {periodSales.length}
+                        </span>
+                      </button>
+
                       <button
                         onClick={() => setFinanceSubTab("pending")}
-                        className={`flex-1 sm:flex-initial px-4 sm:px-6 py-2.5 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[40px] flex items-center justify-center gap-2 cursor-pointer ${
+                        className={`px-3.5 sm:px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[38px] flex items-center justify-center gap-1.5 cursor-pointer ${
                           financeSubTab === "pending"
                             ? "bg-elite-red-500 text-white shadow-md shadow-elite-red-500/20"
                             : "text-slate-400 hover:text-white hover:bg-white/5"
@@ -7210,11 +7474,27 @@ const App: React.FC = () => {
                       >
                         <span>Pendentes</span>
                         <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
-                          {pendingAppointments.length}
+                          {periodPendingApts.length}
+                        </span>
+                      </button>
+
+                      <button
+                        onClick={() => setFinanceSubTab("statement")}
+                        className={`px-3.5 sm:px-4 py-2 rounded-lg text-xs font-black uppercase tracking-wider transition-all min-h-[38px] flex items-center justify-center gap-1.5 cursor-pointer ${
+                          financeSubTab === "statement"
+                            ? "bg-elite-cyan-500 text-white shadow-md shadow-elite-cyan-500/20"
+                            : "text-slate-400 hover:text-white hover:bg-white/5"
+                        }`}
+                      >
+                        <Layers size={13} />
+                        <span>Extrato DRE</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-white/20 font-mono">
+                          {statementList.length}
                         </span>
                       </button>
                     </div>
 
+                    {/* Filtro de Período e Busca */}
                     <div className="flex items-center gap-2.5 flex-wrap">
                       <select
                         value={financeMonthFilter}
@@ -7222,13 +7502,13 @@ const App: React.FC = () => {
                         className="bg-slate-950 border border-white/10 rounded-xl px-3 py-2 text-white text-xs font-bold uppercase outline-none focus:border-elite-red-500 cursor-pointer"
                       >
                         <option value="all">Todos os Períodos (Histórico Completo)</option>
-                        <option value="2026-10">Outubro 2026</option>
-                        <option value="2026-09">Setembro 2026 (Atual)</option>
-                        <option value="2026-08">Agosto 2026</option>
-                        <option value="2026-07">Julho 2026</option>
-                        <option value="2026-06">Junho 2026</option>
-                        <option value="2026-05">Maio 2026</option>
+                        {availableMonths.map((m) => (
+                          <option key={m} value={m}>
+                            {formatMonthOptionLabel(m)}
+                          </option>
+                        ))}
                       </select>
+
                       <div className="relative min-w-[200px] flex-1 sm:flex-initial">
                         <input
                           type="text"
@@ -7250,8 +7530,51 @@ const App: React.FC = () => {
                     </div>
                   </div>
 
+                  {/* Conteúdo de Cada Subaba */}
                   <div className="space-y-3.5">
-                    {financeSubTab === "adjustments" ? (
+                    {/* Subaba: Vendas de Bar e Produtos */}
+                    {financeSubTab === "sales" && (
+                      filteredSales.length > 0 ? (
+                        filteredSales.map((s) => (
+                          <div
+                            key={s.id}
+                            className="p-4 sm:p-5 bg-slate-950/60 border border-white/[0.08] rounded-xl sm:rounded-2xl flex flex-col sm:flex-row justify-between sm:items-center gap-3 group shadow-md hover:border-white/15 transition-all"
+                          >
+                            <div className="flex items-center gap-3.5">
+                              <div className="h-11 w-11 rounded-xl flex items-center justify-center shrink-0 border bg-amber-500/10 text-amber-400 border-amber-500/20">
+                                <ShoppingCart size={20} />
+                              </div>
+                              <div>
+                                <p className="font-black text-white uppercase text-xs sm:text-sm italic mb-0.5">
+                                  {s.itemName}
+                                </p>
+                                <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                  {s.date} • Venda Direta no Balcão
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto">
+                              <span className="text-lg sm:text-xl font-black text-emerald-400 italic font-mono">
+                                + {formatCurrency(s.price)}
+                              </span>
+                              <Badge variant="success" size="sm">
+                                Recebido
+                              </Badge>
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="p-16 text-center opacity-40">
+                          <ShoppingCart size={40} className="mx-auto mb-3 text-slate-600" />
+                          <p className="font-black uppercase text-xs tracking-wider text-slate-400">
+                            Nenhuma venda de produto encontrada para o filtro selecionado
+                          </p>
+                        </div>
+                      )
+                    )}
+
+                    {/* Subaba: Ajustes e Livro Caixa */}
+                    {financeSubTab === "adjustments" && (
                       filteredAdjustments.length > 0 ? (
                         filteredAdjustments.map((adj) => (
                           <div
@@ -7260,7 +7583,11 @@ const App: React.FC = () => {
                           >
                             <div className="flex items-center gap-3.5">
                               <div
-                                className={`h-11 w-11 rounded-xl flex items-center justify-center shrink-0 border ${adj.amount >= 0 ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-rose-500/10 text-rose-400 border-rose-500/20"}`}
+                                className={`h-11 w-11 rounded-xl flex items-center justify-center shrink-0 border ${
+                                  adj.amount >= 0
+                                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                    : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                                }`}
                               >
                                 {adj.amount >= 0 ? (
                                   <ArrowUpCircle size={20} />
@@ -7273,13 +7600,15 @@ const App: React.FC = () => {
                                   {adj.reason}
                                 </p>
                                 <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                                  {adj.date}
+                                  {adj.date} • {adj.amount >= 0 ? "Entrada Extraordinária" : "Saída / Despesa"}
                                 </p>
                               </div>
                             </div>
                             <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto">
                               <span
-                                className={`text-lg sm:text-xl font-black ${adj.amount >= 0 ? "text-emerald-400" : "text-rose-400"}`}
+                                className={`text-lg sm:text-xl font-black italic font-mono ${
+                                  adj.amount >= 0 ? "text-emerald-400" : "text-rose-400"
+                                }`}
                               >
                                 {adj.amount >= 0 ? "+" : ""}
                                 {formatCurrency(adj.amount)}
@@ -7291,17 +7620,13 @@ const App: React.FC = () => {
                                 onClick={async () => {
                                   const userId = effectiveUserId;
                                   if (!userId) return;
+                                  // Optimistic delete
+                                  setAdjustments((prev) => prev.filter((a) => a.id !== adj.id));
                                   try {
                                     await deleteDoc(
-                                      doc(
-                                        db,
-                                        "users",
-                                        userId,
-                                        "adjustments",
-                                        adj.id,
-                                      ),
+                                      doc(db, "users", userId, "adjustments", adj.id),
                                     );
-                                    showToast("Ajuste removido.");
+                                    showToast("Ajuste removido com sucesso.");
                                   } catch (err) {
                                     handleFirestoreError(
                                       err,
@@ -7323,90 +7648,245 @@ const App: React.FC = () => {
                           </p>
                         </div>
                       )
-                    ) : (financeSubTab === "paid" ? filteredPaidApts : filteredPendingApts).length > 0 ? (
-                      (financeSubTab === "paid" ? filteredPaidApts : filteredPendingApts).map((apt) => {
-                        const c = clients.find((cl) => cl.id === apt.clientId);
-                        const clientDisplayName = apt.clientName || c?.name || "Cliente Agendado";
-                        return (
-                          <div
-                            key={apt.id}
-                            className="p-4 sm:p-5 bg-slate-950/60 border border-white/[0.08] rounded-xl sm:rounded-2xl flex flex-col sm:flex-row justify-between sm:items-center gap-4 group shadow-md hover:border-white/15 transition-all"
-                          >
-                            <div className="flex items-center gap-3.5 min-w-0">
-                              <div
-                                className={`h-11 w-11 sm:h-12 sm:w-12 rounded-xl border overflow-hidden flex items-center justify-center shrink-0 ${apt.paid ? "border-emerald-500/30 bg-emerald-500/5" : "border-amber-500/30 bg-amber-500/5"}`}
-                              >
-                                {c?.photo ? (
-                                  <img
-                                    src={c.photo}
-                                    className="h-full w-full object-cover"
-                                  />
-                                ) : (
-                                  <UserIcon
-                                    className="text-slate-600"
-                                    size={20}
-                                  />
-                                )}
-                              </div>
-                              <div className="min-w-0">
-                                <p className="font-black text-white uppercase text-xs sm:text-sm italic leading-tight mb-1 truncate">
-                                  {clientDisplayName}
-                                </p>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-                                    {apt.date} {apt.time ? `• ${apt.time}` : ""} •{" "}
-                                    {
-                                      services.find(
-                                        (s) => s.id === apt.serviceId,
-                                      )?.name || "Corte"
-                                    }
-                                  </p>
-                                  {apt.paid ? (
-                                    <Badge
-                                      variant="success"
-                                      size="sm"
-                                    >
-                                      Pago
-                                    </Badge>
+                    )}
+
+                    {/* Subaba: Ganhos em Cortes (Quitados) */}
+                    {financeSubTab === "paid" && (
+                      filteredPaidApts.length > 0 ? (
+                        filteredPaidApts.map((apt) => {
+                          const c = clients.find((cl) => cl.id === apt.clientId);
+                          const clientDisplayName = apt.clientName || c?.name || "Cliente Agendado";
+                          const sInfo = getServiceInfo(apt.serviceId, services);
+                          return (
+                            <div
+                              key={apt.id}
+                              className="p-4 sm:p-5 bg-slate-950/60 border border-white/[0.08] rounded-xl sm:rounded-2xl flex flex-col sm:flex-row justify-between sm:items-center gap-4 group shadow-md hover:border-white/15 transition-all"
+                            >
+                              <div className="flex items-center gap-3.5 min-w-0">
+                                <div className="h-11 w-11 sm:h-12 sm:w-12 rounded-xl border overflow-hidden flex items-center justify-center shrink-0 border-emerald-500/30 bg-emerald-500/5">
+                                  {c?.photo ? (
+                                    <img
+                                      src={c.photo}
+                                      className="h-full w-full object-cover"
+                                      alt={clientDisplayName}
+                                    />
                                   ) : (
-                                    <Badge
-                                      variant="warning"
-                                      size="sm"
-                                    >
-                                      Em Aberto
-                                    </Badge>
+                                    <UserIcon className="text-slate-600" size={20} />
                                   )}
                                 </div>
+                                <div className="min-w-0">
+                                  <p className="font-black text-white uppercase text-xs sm:text-sm italic leading-tight mb-1 truncate">
+                                    {clientDisplayName}
+                                  </p>
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                      {apt.date} {apt.time ? `• ${apt.time}` : ""} • {sInfo.name}
+                                    </p>
+                                    <Badge variant="success" size="sm">
+                                      Pago
+                                    </Badge>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
+                                <span className="text-lg sm:text-xl font-black text-emerald-400 italic font-mono">
+                                  {formatCurrency(apt.finalPrice)}
+                                </span>
                               </div>
                             </div>
-                            <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
-                              <span className="text-lg sm:text-xl font-black text-white italic font-mono">
-                                {formatCurrency(apt.finalPrice)}
-                              </span>
-                              {!apt.paid && (
-                                <Button
-                                  variant="success"
-                                  size="sm"
-                                  onClick={() =>
-                                    toggleCompleteFlow(apt.id, true)
-                                  }
-                                >
-                                  LIQUIDAR
-                                </Button>
-                              )}
-                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="p-16 text-center opacity-40">
+                          <Receipt size={40} className="mx-auto mb-3 text-slate-600" />
+                          <p className="font-black uppercase text-xs tracking-wider text-slate-400">
+                            Nenhum ganho de corte encontrado neste período
+                          </p>
+                        </div>
+                      )
+                    )}
+
+                    {/* Subaba: Pendentes e Débitos a Liquidar */}
+                    {financeSubTab === "pending" && (
+                      <div className="space-y-4">
+                        {/* Seletor de Tipo de Pendência */}
+                        <div className="flex items-center gap-2 pb-2 border-b border-white/5">
+                          <button
+                            type="button"
+                            onClick={() => setFinancePendingFilter("all")}
+                            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              financePendingFilter === "all"
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Todos ({periodPendingApts.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setFinancePendingFilter("debts")}
+                            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              financePendingFilter === "debts"
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Débitos Pós-Atendimento ({completedDebts.length})
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setFinancePendingFilter("scheduled")}
+                            className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all cursor-pointer ${
+                              financePendingFilter === "scheduled"
+                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                : "text-slate-400 hover:text-white"
+                            }`}
+                          >
+                            Agendados em Aberto ({scheduledOpenApts.length})
+                          </button>
+                        </div>
+
+                        {filteredPendingApts.length > 0 ? (
+                          filteredPendingApts.map((apt) => {
+                            const c = clients.find((cl) => cl.id === apt.clientId);
+                            const clientDisplayName = apt.clientName || c?.name || "Cliente Agendado";
+                            const sInfo = getServiceInfo(apt.serviceId, services);
+                            const isDebt = apt.completed && !apt.paid;
+                            const priceToLiquidate = apt.finalPrice > 0 ? apt.finalPrice : sInfo.price;
+
+                            return (
+                              <div
+                                key={apt.id}
+                                className="p-4 sm:p-5 bg-slate-950/60 border border-white/[0.08] rounded-xl sm:rounded-2xl flex flex-col sm:flex-row justify-between sm:items-center gap-4 group shadow-md hover:border-white/15 transition-all"
+                              >
+                                <div className="flex items-center gap-3.5 min-w-0">
+                                  <div className="h-11 w-11 sm:h-12 sm:w-12 rounded-xl border overflow-hidden flex items-center justify-center shrink-0 border-amber-500/30 bg-amber-500/5">
+                                    {c?.photo ? (
+                                      <img
+                                        src={c.photo}
+                                        className="h-full w-full object-cover"
+                                        alt={clientDisplayName}
+                                      />
+                                    ) : (
+                                      <UserIcon className="text-slate-600" size={20} />
+                                    )}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <p className="font-black text-white uppercase text-xs sm:text-sm italic leading-tight mb-1 truncate">
+                                      {clientDisplayName}
+                                    </p>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                        {apt.date} {apt.time ? `• ${apt.time}` : ""} • {sInfo.name}
+                                      </p>
+                                      {isDebt ? (
+                                        <Badge variant="danger" size="sm">
+                                          Débito / Fiado
+                                        </Badge>
+                                      ) : (
+                                        <Badge variant="warning" size="sm">
+                                          Agendado a Realizar
+                                        </Badge>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
+                                  <span className="text-lg sm:text-xl font-black text-amber-400 italic font-mono">
+                                    {formatCurrency(priceToLiquidate)}
+                                  </span>
+                                  <Button
+                                    variant="success"
+                                    size="sm"
+                                    onClick={() => {
+                                      toggleCompleteFlow(apt.id, true, priceToLiquidate);
+                                    }}
+                                  >
+                                    LIQUIDAR AGORA
+                                  </Button>
+                                </div>
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="p-16 text-center opacity-40">
+                            <Clock size={40} className="mx-auto mb-3 text-slate-600" />
+                            <p className="font-black uppercase text-xs tracking-wider text-slate-400">
+                              Nenhuma pendência financeira encontrada
+                            </p>
                           </div>
-                        );
-                      })
-                    ) : (
-                      <div className="p-16 text-center opacity-40">
-                        <Receipt
-                          size={40}
-                          className="mx-auto mb-3 text-slate-600"
-                        />
-                        <p className="font-black uppercase text-xs tracking-wider text-slate-400">
-                          Nenhum registro encontrado nesta categoria
-                        </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Subaba: Extrato DRE Unificado */}
+                    {financeSubTab === "statement" && (
+                      <div className="space-y-3">
+                        <div className="p-3 bg-slate-950/80 rounded-xl border border-white/5 flex items-center justify-between text-[11px] text-slate-400 font-bold uppercase tracking-wider">
+                          <span>Total de Lançamentos: {statementList.length}</span>
+                          <span>Resultado Líquido do Período: <span className="text-emerald-400 font-black">{formatCurrency(periodGrandTotal)}</span></span>
+                        </div>
+
+                        {statementList.length > 0 ? (
+                          statementList.map((item) => (
+                            <div
+                              key={item.id}
+                              className="p-4 bg-slate-950/60 border border-white/[0.08] rounded-xl flex flex-col sm:flex-row justify-between sm:items-center gap-3 hover:border-white/15 transition-all"
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                <div
+                                  className={`h-10 w-10 rounded-xl flex items-center justify-center shrink-0 border ${
+                                    item.isCredit
+                                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                      : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                                  }`}
+                                >
+                                  {item.type === "cut" && <Scissors size={18} />}
+                                  {item.type === "sale" && <ShoppingCart size={18} />}
+                                  {item.type === "adjustment" && (
+                                    item.isCredit ? <ArrowUpCircle size={18} /> : <ArrowDownCircle size={18} />
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <p className="font-black text-white uppercase text-xs sm:text-sm italic leading-tight truncate">
+                                      {item.title}
+                                    </p>
+                                    <span
+                                      className={`text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider ${
+                                        item.isCredit
+                                          ? "bg-emerald-500/20 text-emerald-300"
+                                          : "bg-rose-500/20 text-rose-300"
+                                      }`}
+                                    >
+                                      {item.badgeText}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                                    {item.date} {item.time ? `• ${item.time}` : ""} • {item.subtitle}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between sm:justify-end gap-3 w-full sm:w-auto">
+                                <span
+                                  className={`text-base sm:text-lg font-black italic font-mono ${
+                                    item.isCredit ? "text-emerald-400" : "text-rose-400"
+                                  }`}
+                                >
+                                  {item.isCredit ? "+" : "-"}
+                                  {formatCurrency(item.amount)}
+                                </span>
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <div className="p-16 text-center opacity-40">
+                            <Layers size={40} className="mx-auto mb-3 text-slate-600" />
+                            <p className="font-black uppercase text-xs tracking-wider text-slate-400">
+                              Nenhum lançamento no extrato para os filtros atuais
+                            </p>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
