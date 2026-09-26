@@ -77,7 +77,6 @@ import {
   UserPlus,
   Layers,
   Award,
-  Globe,
 } from "lucide-react";
 import {
   AreaChart,
@@ -127,9 +126,6 @@ import {
   getDocFromServer,
   setSimulatedUser,
   isQuotaOrAvailabilityError,
-  getGoogleLink,
-  setGoogleLink,
-  removeGoogleLink,
 } from "./firebase";
 import {
   onAuthStateChanged,
@@ -143,7 +139,6 @@ import {
   linkWithPopup,
   EmailAuthProvider,
   reauthenticateWithCredential,
-  sendPasswordResetEmail,
 } from "firebase/auth";
 
 interface BalanceAdjustment {
@@ -192,27 +187,6 @@ const LogoElite = ({ className = "h-12 w-12" }: { className?: string }) => (
       />
     </div>
   </div>
-);
-
-const GoogleIcon = ({ className = "w-5 h-5" }: { className?: string }) => (
-  <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-    <path
-      fill="#4285F4"
-      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-    />
-    <path
-      fill="#34A853"
-      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-    />
-    <path
-      fill="#FBBC05"
-      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-    />
-    <path
-      fill="#EA4335"
-      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-    />
-  </svg>
 );
 
 const WoodenMouseSignature = ({ minimal = false }: { minimal?: boolean }) => {
@@ -278,35 +252,9 @@ export const getEffectiveBarberId = (user: any): string => {
     return user.trim() || "matheus_farias";
   }
   if (user.uid === "offline_demo") return "matheus_farias";
-  const email = (user.email?.toLowerCase() || "").trim();
-  const uid = (user.uid || "").trim();
-
-  // 1. Verificar se a conta Google ou UID está vinculada a um perfil existente
-  const linkedId = getGoogleLink(email) || getGoogleLink(uid);
-  if (linkedId) {
-    return linkedId;
-  }
-
-  // 2. Verificar no registro de usuários do sistema
-  try {
-    const rawRegistered = typeof localStorage !== "undefined" ? localStorage.getItem("simdb_registered_users") : null;
-    if (rawRegistered) {
-      const reg = JSON.parse(rawRegistered);
-      for (const key of Object.keys(reg)) {
-        const u = reg[key];
-        if (
-          (u.linkedGoogleEmail && u.linkedGoogleEmail.toLowerCase() === email) ||
-          (u.linkedGoogleUid && u.linkedGoogleUid === uid)
-        ) {
-          return u.uid || key;
-        }
-      }
-    }
-  } catch {}
-
-  // 3. Perfis mestres / administradores pré-cadastrados (Matheus Farias)
+  const email = user.email?.toLowerCase() || "";
   if (
-    uid === "matheus_farias" ||
+    user.uid === "matheus_farias" ||
     email.includes("brendom") ||
     email.includes("matheus") ||
     email.includes("admin")
@@ -980,7 +928,7 @@ const BusinessHoursCard: React.FC<BusinessHoursCardProps> = ({
 
 const App: React.FC = () => {
   const [session, setSession] = useState<UserSession | null>(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
   const [isAuthReady, setIsAuthReady] = useState(true);
   const [authMode, setAuthMode] = useState<"login" | "register" | "reset">(
     "login",
@@ -990,23 +938,6 @@ const App: React.FC = () => {
   const [newLoginName, setNewLoginName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isUpdatingLoginName, setIsUpdatingLoginName] = useState(false);
-
-  // Estados para Autenticação Google e Vinculação de Perfil
-  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
-  const [pendingGoogleUser, setPendingGoogleUser] = useState<any>(null);
-  const [showGoogleLinkPrompt, setShowGoogleLinkPrompt] = useState(false);
-  const [linkExistingUsername, setLinkExistingUsername] = useState("");
-  const [linkExistingPassword, setLinkExistingPassword] = useState("");
-  const [linkExistingError, setLinkExistingError] = useState<string | null>(null);
-  const [isLinkingExisting, setIsLinkingExisting] = useState(false);
-  const [showGoogleAccountPicker, setShowGoogleAccountPicker] = useState(false);
-  const [googlePickerMode, setGooglePickerMode] = useState<"login" | "link">("login");
-  const [customGoogleEmail, setCustomGoogleEmail] = useState("");
-  const [showCustomGoogleInput, setShowCustomGoogleInput] = useState(false);
-
-  // Estados para Recuperação de Senha
-  const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
-  const [isResettingPassword, setIsResettingPassword] = useState(false);
 
   const [activeTab, setActiveTab] = useState<Tab>(Tab.Dashboard);
   const [financeSubTab, setFinanceSubTab] = useState<
@@ -1264,47 +1195,6 @@ const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  // Controle de Sessão Seguro: Expiração automática por inatividade (30 minutos)
-  const INACTIVITY_TIMEOUT_MS = 30 * 60 * 1000;
-  const lastActivityRef = useRef<number>(Date.now());
-
-  useEffect(() => {
-    if (!isAuthenticated) return;
-
-    lastActivityRef.current = Date.now();
-
-    const recordActivity = () => {
-      lastActivityRef.current = Date.now();
-    };
-
-    const activityEvents = [
-      "mousedown",
-      "mousemove",
-      "keydown",
-      "scroll",
-      "touchstart",
-      "click",
-    ];
-
-    activityEvents.forEach((evt) =>
-      window.addEventListener(evt, recordActivity, { passive: true }),
-    );
-
-    const checkInterval = setInterval(() => {
-      const inactiveDuration = Date.now() - lastActivityRef.current;
-      if (inactiveDuration >= INACTIVITY_TIMEOUT_MS) {
-        handleLogout(true);
-      }
-    }, 20000);
-
-    return () => {
-      activityEvents.forEach((evt) =>
-        window.removeEventListener(evt, recordActivity),
-      );
-      clearInterval(checkInterval);
-    };
-  }, [isAuthenticated]);
-
   // Auto-save Profile Settings (com verificação de modificação real para evitar consumo desnecessário de cota)
   useEffect(() => {
     if (!isAuthenticated || !auth.currentUser || !session) return;
@@ -1321,10 +1211,6 @@ const App: React.FC = () => {
       marketing_msg: marketingMsg || "",
       campaign_goal: campaignGoal || "",
       privacy_mode: !!isPrivacyMode,
-      linkedGoogleEmail: session.linkedGoogleEmail || "",
-      linkedGoogleUid: session.linkedGoogleUid || "",
-      googleLinked: !!session.googleLinked,
-      linkedAt: session.linkedAt || "",
     };
 
     const fingerprint = JSON.stringify(currentProfilePayload);
@@ -1362,9 +1248,6 @@ const App: React.FC = () => {
     session?.monthlyGoal,
     session?.businessHours,
     session?.unavailableSlots,
-    session?.linkedGoogleEmail,
-    session?.linkedGoogleUid,
-    session?.googleLinked,
     marketingMsg,
     campaignGoal,
     isPrivacyMode,
@@ -1395,10 +1278,6 @@ const App: React.FC = () => {
             marketing_msg: data.marketing_msg || "",
             campaign_goal: data.campaign_goal || "",
             privacy_mode: !!data.privacy_mode,
-            linkedGoogleEmail: data.linkedGoogleEmail || "",
-            linkedGoogleUid: data.linkedGoogleUid || "",
-            googleLinked: !!data.googleLinked,
-            linkedAt: data.linkedAt || "",
           });
           lastSavedProfileRef.current = incomingFingerprint;
 
@@ -1410,17 +1289,7 @@ const App: React.FC = () => {
             monthlyGoal: data.monthlyGoal,
             businessHours: data.businessHours || undefined,
             unavailableSlots: data.unavailableSlots || [],
-            linkedGoogleEmail: data.linkedGoogleEmail,
-            linkedGoogleUid: data.linkedGoogleUid,
-            googleLinked: data.googleLinked,
-            linkedAt: data.linkedAt,
           });
-
-          // Sync Google link mapping in local cache
-          if (data.linkedGoogleEmail) {
-            setGoogleLink(data.linkedGoogleEmail, data.linkedGoogleUid || "", userId);
-          }
-
           setMarketingMsg(data.marketing_msg || "");
           setCampaignGoal(data.campaign_goal || "");
           setIsPrivacyMode(data.privacy_mode || false);
@@ -2680,6 +2549,49 @@ const App: React.FC = () => {
     }
   };
 
+  const handleGoogleLogin = async () => {
+    const provider = new GoogleAuthProvider();
+    try {
+      const result = await signInWithPopup(auth, provider);
+      const user = result.user;
+
+      // Check if user document exists, if not create it
+      const userDoc = await getDoc(doc(db, "users", user.uid));
+      if (!userDoc.exists()) {
+        await setDoc(doc(db, "users", user.uid), {
+          username: user.displayName || user.email?.split("@")[0] || "Barbeiro",
+          shopName: "Minha Barbearia",
+          phone: "",
+          profileImage: user.photoURL || DEFAULT_PROFILE_IMG,
+          monthlyGoal: 5000,
+          marketing_msg: "",
+          campaign_goal: "",
+          privacy_mode: false,
+        });
+      }
+      showToast("Bem-vindo!");
+    } catch (err: any) {
+      console.error("Google Auth Error:", err);
+      if (err.code === "auth/account-exists-with-different-credential") {
+        setAuthError(
+          "Já existe uma conta com este e-mail usando senha. Entre com seu e-mail e senha primeiro e depois vincule o Google nas configurações do perfil.",
+        );
+      } else if (
+        err.code?.includes("api-key-not-valid") ||
+        err.message?.includes("api-key-not-valid") ||
+        err.code === "auth/api-key-not-valid"
+      ) {
+        setAuthError(
+          "Erro de Chave de API: O Firebase acabou de ser provisionado e a chave de API leva de 2 a 5 minutos para se propagar nos servidores globais do Google. Por favor, aguarde alguns instantes e faça uma atualização forçada da página (Ctrl+Shift+R ou Cmd+Shift+R) para renovar a conexão.",
+        );
+      } else {
+        setAuthError(
+          `Erro ao entrar com Google: ${err.code || "Erro desconhecido"}`,
+        );
+      }
+    }
+  };
+
   const handleOfflineLogin = () => {
     setSimulatedUser({
       uid: "offline_demo",
@@ -2689,6 +2601,26 @@ const App: React.FC = () => {
     setAuthError(null);
     setShowEmailAuthGuide(false);
     showToast("Acessando com o Modo Demonstrativo Local!", "info");
+  };
+
+  const handleLinkGoogle = async () => {
+    if (!auth.currentUser) return;
+    const provider = new GoogleAuthProvider();
+    try {
+      await linkWithPopup(auth.currentUser, provider);
+      showToast("Conta Google vinculada com sucesso!");
+      // Force a refresh of the session data if needed, but onSnapshot should handle it
+    } catch (err: any) {
+      console.error("Link Error:", err);
+      if (err.code === "auth/credential-already-in-use") {
+        showToast(
+          "Esta conta Google já está vinculada a outro usuário.",
+          "error",
+        );
+      } else {
+        showToast("Erro ao vincular conta Google.", "error");
+      }
+    }
   };
 
   const markNotificationAsRead = async (id: string) => {
@@ -3870,411 +3802,15 @@ const App: React.FC = () => {
     }
   };
 
-  const handleLogout = async (byInactivity: boolean = false) => {
+  const handleLogout = async () => {
     try {
       setSimulatedUser(null);
       await auth.signOut();
-      setIsAuthenticated(false);
-      setSession(null);
-      if (byInactivity) {
-        setAuthError(
-          "Sua sessão expirou por inatividade para sua segurança. Por favor, acesse novamente.",
-        );
-        showToast("Sessão expirada por inatividade.", "info");
-      } else {
-        setAuthError(null);
-        showToast("Sessão encerrada com sucesso!", "success");
-      }
+      showToast("Sessão encerrada com sucesso!", "success");
     } catch (err) {
       console.error("Erro ao deslogar:", err);
-      setIsAuthenticated(false);
-      setSession(null);
+      showToast("Erro ao deslogar.", "error");
     }
-  };
-
-  const handleGoogleUserSuccess = async (googleUser: {
-    email: string;
-    uid: string;
-    displayName?: string | null;
-    photoURL?: string | null;
-  }) => {
-    const email = (googleUser.email || "").toLowerCase().trim();
-    const uid = (googleUser.uid || "").trim();
-
-    // 1. Verificar se esta conta Google já possui vínculo registrado
-    const mappedBarberId = getGoogleLink(email) || getGoogleLink(uid);
-    if (mappedBarberId) {
-      setSimulatedUser({
-        uid: mappedBarberId,
-        email: googleUser.email,
-        displayName: googleUser.displayName || "Usuário Google",
-        photoURL: googleUser.photoURL,
-      });
-      setIsAuthenticated(true);
-      setShowGoogleAccountPicker(false);
-      showToast(
-        `Bem-vindo(a), ${googleUser.displayName || "Usuário"}! Conta Google vinculada reconhecida com sucesso.`,
-        "success",
-      );
-      return;
-    }
-
-    // 2. Reconhecimento automático de perfil existente mestre/admin (ex: brendomsiqueira96@gmail.com, matheus, admin)
-    if (
-      email.includes("brendom") ||
-      email.includes("matheus") ||
-      email.includes("admin")
-    ) {
-      setGoogleLink(email, uid, "matheus_farias");
-      try {
-        await setDoc(
-          doc(db, "users", "matheus_farias"),
-          {
-            linkedGoogleEmail: email,
-            linkedGoogleUid: uid,
-            googleLinked: true,
-            linkedAt: new Date().toISOString(),
-          },
-          { merge: true },
-        );
-      } catch (dbErr) {
-        console.warn("Aviso ao salvar link no Firestore:", dbErr);
-      }
-
-      setSimulatedUser({
-        uid: "matheus_farias",
-        email: googleUser.email,
-        displayName: googleUser.displayName || "Matheus Farias",
-        photoURL: googleUser.photoURL,
-      });
-      setIsAuthenticated(true);
-      setShowGoogleAccountPicker(false);
-      showToast(
-        "Conta Google vinculada com sucesso à Barbearia Matheus Farias!",
-        "success",
-      );
-      return;
-    }
-
-    // 3. Verificar se há usuário registrado localmente ou no Firestore com este e-mail
-    const registeredUsers = JSON.parse(
-      localStorage.getItem("simdb_registered_users") || "{}",
-    );
-    if (registeredUsers[email]) {
-      const existing = registeredUsers[email];
-      setGoogleLink(email, uid, existing.uid);
-      registeredUsers[email].linkedGoogleEmail = email;
-      registeredUsers[email].linkedGoogleUid = uid;
-      localStorage.setItem(
-        "simdb_registered_users",
-        JSON.stringify(registeredUsers),
-      );
-
-      setSimulatedUser({
-        uid: existing.uid,
-        email: googleUser.email,
-        displayName: existing.username || googleUser.displayName,
-        photoURL: googleUser.photoURL,
-      });
-      setIsAuthenticated(true);
-      setShowGoogleAccountPicker(false);
-      showToast(
-        "Perfil encontrado e vinculado à sua conta Google com sucesso!",
-        "success",
-      );
-      return;
-    }
-
-    // 4. Caso seja uma nova conta Google ainda não associada:
-    // Apresenta modal de escolha segura para o usuário vincular ao perfil existente ou criar um novo
-    setPendingGoogleUser(googleUser);
-    setShowGoogleAccountPicker(false);
-    setShowGoogleLinkPrompt(true);
-  };
-
-  const completeProfileGoogleLink = async (rawEmail: string, rawUid?: string) => {
-    const gEmail = rawEmail.toLowerCase().trim();
-    const gUid = rawUid || ("google_" + gEmail.replace(/[^a-z0-9]/g, "_"));
-    const targetUserId = effectiveUserId || "matheus_farias";
-
-    setGoogleLink(gEmail, gUid, targetUserId);
-
-    try {
-      await setDoc(
-        doc(db, "users", targetUserId),
-        {
-          linkedGoogleEmail: gEmail,
-          linkedGoogleUid: gUid,
-          googleLinked: true,
-          linkedAt: new Date().toISOString(),
-        },
-        { merge: true },
-      );
-    } catch (err) {
-      console.warn("Aviso ao salvar link de perfil no Firestore:", err);
-    }
-
-    setSession((prev) =>
-      prev
-        ? {
-            ...prev,
-            linkedGoogleEmail: gEmail,
-            linkedGoogleUid: gUid,
-            googleLinked: true,
-            linkedAt: new Date().toISOString(),
-          }
-        : null,
-    );
-
-    setShowGoogleAccountPicker(false);
-    showToast(`Conta Google (${gEmail}) vinculada ao perfil com sucesso!`, "success");
-  };
-
-  const handleGoogleLogin = async () => {
-    setAuthError(null);
-    setGooglePickerMode("login");
-    setShowCustomGoogleInput(false);
-    setCustomGoogleEmail("");
-    setShowGoogleAccountPicker(true);
-  };
-
-  const handleLinkCurrentProfileWithGoogle = async () => {
-    setGooglePickerMode("link");
-    setShowCustomGoogleInput(false);
-    setCustomGoogleEmail("");
-    setShowGoogleAccountPicker(true);
-  };
-
-  const handleUnlinkCurrentProfileFromGoogle = async () => {
-    if (!confirm("Deseja realmente desvincular a conta Google deste perfil? Você precisará usar seu usuário e senha para acessar.")) {
-      return;
-    }
-    try {
-      const targetUserId = effectiveUserId;
-      const gEmail = session?.linkedGoogleEmail;
-      const gUid = session?.linkedGoogleUid;
-
-      removeGoogleLink(gEmail, gUid);
-
-      await setDoc(
-        doc(db, "users", targetUserId),
-        {
-          linkedGoogleEmail: "",
-          linkedGoogleUid: "",
-          googleLinked: false,
-          linkedAt: "",
-        },
-        { merge: true },
-      );
-
-      setSession((prev) =>
-        prev
-          ? {
-              ...prev,
-              linkedGoogleEmail: "",
-              linkedGoogleUid: "",
-              googleLinked: false,
-              linkedAt: "",
-            }
-          : null,
-      );
-
-      showToast("Conta Google desvinculada com sucesso.", "info");
-    } catch (err: any) {
-      console.error("Erro ao desvincular Google:", err);
-      showToast("Erro ao desvincular conta Google.", "error");
-    }
-  };
-
-  const renderGoogleAccountPickerModal = () => {
-    if (!showGoogleAccountPicker) return null;
-
-    const handleSelectAccount = (email: string, displayName: string) => {
-      if (googlePickerMode === "link") {
-        completeProfileGoogleLink(email);
-      } else {
-        handleGoogleUserSuccess({
-          email,
-          uid: "google_" + email.toLowerCase().replace(/[^a-z0-9]/g, "_"),
-          displayName,
-          photoURL: null,
-        });
-      }
-    };
-
-    return (
-      <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-300">
-        <div className="w-full max-w-md">
-          <Card
-            className="border-white/20 shadow-[0_25px_60px_rgba(0,0,0,0.8)]"
-            actions={
-              <button
-                type="button"
-                onClick={() => {
-                  setShowGoogleAccountPicker(false);
-                  setShowCustomGoogleInput(false);
-                  setCustomGoogleEmail("");
-                }}
-                className="text-slate-400 hover:text-white cursor-pointer p-1"
-              >
-                <X size={20} />
-              </button>
-            }
-          >
-            <div className="space-y-6">
-              {/* Cabeçalho Oficial Google */}
-              <div className="text-center space-y-2 pb-1">
-                <div className="inline-flex p-3 bg-white rounded-2xl shadow-lg border border-slate-200">
-                  <GoogleIcon className="w-8 h-8" />
-                </div>
-                <h3 className="text-lg font-black text-white uppercase tracking-wider">
-                  {googlePickerMode === "link"
-                    ? "Vincular Conta Google"
-                    : "Fazer login com o Google"}
-                </h3>
-                <p className="text-[11px] text-slate-400 leading-relaxed max-w-xs mx-auto">
-                  Escolha uma conta para {googlePickerMode === "link" ? "vincular ao seu perfil da" : "acessar a"}{" "}
-                  <strong className="text-white">Barbearia Matheus Farias</strong>
-                </p>
-              </div>
-
-              {/* Lista de Contas Disponíveis */}
-              <div className="space-y-2.5">
-                {/* Conta do Usuário Principal (Brendom Siqueira) */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleSelectAccount(
-                      "brendomsiqueira96@gmail.com",
-                      "Brendom Siqueira",
-                    )
-                  }
-                  className="w-full p-3.5 bg-slate-900/90 hover:bg-slate-800 border-2 border-white/10 hover:border-elite-red-500/60 rounded-2xl transition-all flex items-center gap-3.5 text-left group cursor-pointer shadow-md active:scale-[0.99]"
-                >
-                  <div className="w-11 h-11 rounded-full bg-elite-red-600 flex items-center justify-center text-white font-black text-base shadow-sm shrink-0 border border-white/20">
-                    B
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-black text-white truncate group-hover:text-elite-red-400 transition-colors">
-                        Brendom Siqueira
-                      </p>
-                      <span className="text-[8px] font-black uppercase text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                        Detectada
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 font-mono truncate">
-                      brendomsiqueira96@gmail.com
-                    </p>
-                  </div>
-                  <ChevronRight
-                    size={18}
-                    className="text-slate-500 group-hover:text-white transition-colors shrink-0"
-                  />
-                </button>
-
-                {/* Opção Barbeiro Matheus Farias */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleSelectAccount(
-                      "matheus@barbershop.com",
-                      "Matheus Farias",
-                    )
-                  }
-                  className="w-full p-3.5 bg-slate-900/60 hover:bg-slate-800/80 border border-white/10 hover:border-[#E1B15F]/50 rounded-2xl transition-all flex items-center gap-3.5 text-left group cursor-pointer shadow-sm active:scale-[0.99]"
-                >
-                  <div className="w-11 h-11 rounded-full bg-amber-600/30 border border-amber-500/40 flex items-center justify-center text-[#E1B15F] font-black text-base shrink-0">
-                    M
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="text-sm font-black text-white truncate group-hover:text-[#E1B15F] transition-colors">
-                        Matheus Farias
-                      </p>
-                      <span className="text-[8px] font-black uppercase text-[#E1B15F] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
-                        Barbeiro Mestre
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 font-mono truncate">
-                      matheus@barbershop.com
-                    </p>
-                  </div>
-                  <ChevronRight
-                    size={18}
-                    className="text-slate-500 group-hover:text-white transition-colors shrink-0"
-                  />
-                </button>
-
-                {/* Usar outra conta Google */}
-                {!showCustomGoogleInput ? (
-                  <button
-                    type="button"
-                    onClick={() => setShowCustomGoogleInput(true)}
-                    className="w-full p-3 bg-slate-950/60 hover:bg-slate-900 border border-dashed border-white/20 hover:border-white/40 rounded-2xl text-[11px] font-black uppercase tracking-wider text-slate-300 hover:text-white transition-all flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <UserPlus size={15} /> USAR OUTRA CONTA GOOGLE
-                  </button>
-                ) : (
-                  <div className="p-3.5 bg-slate-950/90 rounded-2xl border border-white/15 space-y-2.5 animate-in fade-in duration-200">
-                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
-                      Insira qualquer e-mail Google:
-                    </p>
-                    <div className="flex gap-2">
-                      <input
-                        type="email"
-                        value={customGoogleEmail}
-                        onChange={(e) => setCustomGoogleEmail(e.target.value)}
-                        placeholder="seu-email@gmail.com"
-                        className="bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white flex-1 focus:outline-none focus:border-elite-red-500 font-mono"
-                        autoFocus
-                      />
-                      <Button
-                        size="sm"
-                        variant="primary"
-                        className="text-[10px] px-3 font-black"
-                        onClick={() => {
-                          if (!customGoogleEmail.trim()) {
-                            showToast("Digite seu e-mail Google.", "error");
-                            return;
-                          }
-                          const name = customGoogleEmail.split("@")[0];
-                          handleSelectAccount(
-                            customGoogleEmail.trim(),
-                            name.charAt(0).toUpperCase() + name.slice(1),
-                          );
-                        }}
-                      >
-                        CONTINUAR
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Termo e Rodapé de Segurança */}
-              <div className="pt-2 border-t border-white/10 text-center space-y-3">
-                <p className="text-[9px] text-slate-400 leading-relaxed font-medium">
-                  Para continuar, o Google compartilhará seu nome e endereço de
-                  e-mail com a Barbearia Matheus Farias. Seus dados e histórico
-                  estão sempre seguros.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowGoogleAccountPicker(false);
-                    setShowCustomGoogleInput(false);
-                  }}
-                  className="text-[10px] text-slate-500 hover:text-red-400 font-black uppercase tracking-wider cursor-pointer"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          </Card>
-        </div>
-      </div>
-    );
   };
 
   const handleQuickDemoLogin = () => {
@@ -4283,7 +3819,6 @@ const App: React.FC = () => {
       email: "matheus@barbershop.com",
       displayName: "Matheus Farias",
     });
-    setIsAuthenticated(true);
     showToast("Acesso estabelecido com sucesso!", "success");
   };
 
@@ -4312,7 +3847,6 @@ const App: React.FC = () => {
 
     setAuthError(null);
     setShowEmailAuthGuide(false);
-    setResetSuccessMessage(null);
 
     try {
       if (authMode === "register") {
@@ -4370,66 +3904,23 @@ const App: React.FC = () => {
           email,
           displayName: username,
         });
-        setIsAuthenticated(true);
 
         showToast("Conta criada e acessada com sucesso!");
         return;
       }
 
       if (authMode === "reset") {
-        if (!email) {
-          setAuthError("Por favor, informe seu e-mail ou usuário para recuperar a senha.");
-          return;
-        }
-        setIsResettingPassword(true);
-        try {
-          let targetEmail = email;
-          if (!targetEmail.includes("@")) {
-            const registeredUsers = JSON.parse(
-              localStorage.getItem("simdb_registered_users") || "{}",
-            );
-            const found = Object.values(registeredUsers).find(
-              (u: any) =>
-                u.username?.toLowerCase() === email.toLowerCase() ||
-                u.email?.toLowerCase().startsWith(email.toLowerCase()),
-            ) as any;
-            if (found && found.email) {
-              targetEmail = found.email;
-            } else if (
-              email.toLowerCase().includes("matheus") ||
-              email.toLowerCase().includes("admin")
-            ) {
-              targetEmail = "matheus@barbershop.com";
-            } else {
-              targetEmail = `${email.toLowerCase()}@barbershop.com`;
-            }
-          }
-
-          try {
-            await sendPasswordResetEmail(auth, targetEmail);
-            setResetSuccessMessage(
-              `Instruções de redefinição de senha foram enviadas para "${targetEmail}". Verifique sua caixa de entrada e pasta de spam.`,
-            );
-            showToast("E-mail de recuperação enviado com sucesso!", "success");
-          } catch (fbErr: any) {
-            console.warn("Firebase password reset warning:", fbErr);
-            setResetSuccessMessage(
-              `Solicitação de recuperação processada para "${email}". Se a conta existir, as instruções foram preparadas. Você também pode acessar diretamente via "Entrar com Google" ou utilizar a senha padrão.`,
-            );
-            showToast("Solicitação de recuperação processada!", "info");
-          }
-        } catch (err: any) {
-          console.error("Erro na recuperação de senha:", err);
-          setAuthError("Erro ao processar solicitação de recuperação. Tente novamente.");
-        } finally {
-          setIsResettingPassword(false);
-        }
+        // Firebase password reset would go here, but for now we'll just show a message
+        showToast(
+          "Funcionalidade de recuperação em breve. Contate o suporte.",
+          "info",
+        );
+        setAuthMode("login");
         return;
       }
 
       try {
         await signInWithEmailAndPassword(auth, email, pass);
-        setIsAuthenticated(true);
         showToast("Bem-vindo de volta!");
       } catch (loginErr: any) {
         // When Email/Password provider is disabled in Firebase console or offline
@@ -4467,7 +3958,6 @@ const App: React.FC = () => {
               email: existingUser.email,
               displayName: existingUser.username || email.split("@")[0],
             });
-            setIsAuthenticated(true);
             showToast("Bem-vindo de volta!", "success");
             return;
           }
@@ -4479,7 +3969,6 @@ const App: React.FC = () => {
               email,
               displayName: "Matheus Farias",
             });
-            setIsAuthenticated(true);
             showToast("Acesso estabelecido com sucesso!", "success");
             return;
           }
@@ -4520,7 +4009,6 @@ const App: React.FC = () => {
             email,
             displayName: username,
           });
-          setIsAuthenticated(true);
           showToast("Acesso realizado com sucesso!", "success");
           return;
         }
@@ -4560,7 +4048,6 @@ const App: React.FC = () => {
               campaign_goal: "",
               privacy_mode: false,
             });
-            setIsAuthenticated(true);
             showToast("Conta criada e acessada com sucesso!");
             return;
           } catch (createErr: any) {
@@ -4570,7 +4057,6 @@ const App: React.FC = () => {
                 email: email,
                 displayName: "Matheus Farias",
               });
-              setIsAuthenticated(true);
               showToast("Acesso estabelecido com sucesso!", "success");
               return;
             }
@@ -4585,7 +4071,6 @@ const App: React.FC = () => {
             email: email,
             displayName: email === "admin@barbershop.com" ? "Matheus Farias (Modo Admin Local)" : "Matheus Farias",
           });
-          setIsAuthenticated(true);
           showToast("Acesso principal estabelecido!", "success");
           return;
         }
@@ -5157,7 +4642,7 @@ const App: React.FC = () => {
                       Clique em{" "}
                       <strong className="text-white">
                         Build &gt; Authentication
-                      </strong>{" "}
+                    </strong>{" "}
                       no menu esquerdo.
                     </li>
                     <li>
@@ -5169,7 +4654,7 @@ const App: React.FC = () => {
                       Clique em{" "}
                       <strong className="text-white">
                         Adicionar novo provedor
-                      </strong>{" "}
+                    </strong>{" "}
                       e selecione{" "}
                       <strong className="text-white">E-mail/Senha</strong>.
                     </li>
@@ -5180,495 +4665,93 @@ const App: React.FC = () => {
                     </li>
                   </ol>
                   <p className="text-[8px] text-slate-400 font-bold leading-normal text-center">
-                    * SEU USUÁRIO DE ACESSO PADRÃO &quot;MATHEUS&quot; COM A SENHA &quot;372087&quot;
+                    * SEU USUÁRIO DE ACESSO PADRÃO "MATHEUS" COM A SENHA "372087"
                     ESTÁ CONFIGURADO E PRONTO PARA ENTRAR.
                   </p>
                 </div>
               )}
 
-              {authMode === "reset" ? (
-                /* Modo de Recuperação de Senha */
-                <div className="space-y-4">
-                  <div className="text-center space-y-1 pb-1">
-                    <span className="inline-flex p-2.5 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-[#E1B15F] mb-1">
-                      <KeyRound size={22} />
-                    </span>
-                    <h3 className="text-sm font-black text-white uppercase tracking-wider">
-                      Recuperação de Acesso
-                    </h3>
-                    <p className="text-[10px] text-slate-400 leading-relaxed">
-                      Informe o seu e-mail ou usuário para receber instruções ou redefinir a senha do seu perfil.
-                    </p>
-                  </div>
-
-                  {resetSuccessMessage ? (
-                    <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl space-y-2 text-center">
-                      <div className="flex items-center justify-center gap-1.5 text-emerald-400 text-xs font-black uppercase">
-                        <CheckCircle2 size={16} /> Solicitação Processada
-                      </div>
-                      <p className="text-[10px] text-slate-300 leading-relaxed font-medium">
-                        {resetSuccessMessage}
-                      </p>
-                    </div>
-                  ) : (
-                    <>
-                      <Input
-                        label="E-MAIL OU USUÁRIO CADASTRADO"
-                        name="email"
-                        type="text"
-                        placeholder="Insira seu e-mail ou usuário"
-                        required
-                      />
-
-                      <Button
-                        type="submit"
-                        isLoading={isResettingPassword}
-                        className="w-full py-4 tracking-widest text-xs shadow-xl active:scale-[0.98] transition-transform"
-                      >
-                        ENVIAR INSTRUÇÕES DE RECUPERAÇÃO
-                      </Button>
-                    </>
-                  )}
-
-                  <div className="relative flex items-center justify-center my-3">
-                    <div className="border-t border-white/10 w-full" />
-                    <span className="bg-slate-900 px-3 text-[9px] font-black uppercase tracking-wider text-slate-500 whitespace-nowrap">
-                      OU ACESSE DIRETAMENTE
-                    </span>
-                    <div className="border-t border-white/10 w-full" />
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={handleGoogleLogin}
-                    disabled={isGoogleLoading}
-                    className="w-full py-3 px-4 bg-white hover:bg-slate-100 text-slate-900 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 shadow-md active:scale-[0.98] cursor-pointer disabled:opacity-60"
-                  >
-                    {isGoogleLoading ? (
-                      <>
-                        <RefreshCw size={15} className="animate-spin text-slate-700" />
-                        <span>CONECTANDO COM O GOOGLE...</span>
-                      </>
-                    ) : (
-                      <>
-                        <GoogleIcon className="w-5 h-5" />
-                        <span>ENTRAR COM GOOGLE</span>
-                      </>
-                    )}
-                  </button>
-
-                  <div className="pt-2 text-center">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode("login");
-                        setAuthError(null);
-                        setResetSuccessMessage(null);
-                      }}
-                      className="text-[10px] text-[#E1B15F] hover:underline font-black uppercase tracking-widest cursor-pointer"
-                    >
-                      ← VOLTAR PARA O LOGIN
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                /* Modo Login ou Cadastro */
+              {authMode === "register" && (
                 <>
-                  {authMode === "register" && (
-                    <>
-                      <Input
-                        label="NOME DA BARBEARIA"
-                        name="shopName"
-                        placeholder="EX: BARBER SHOP"
-                        required
-                      />
-                      <Input
-                        label="WHATSAPP"
-                        name="phone"
-                        placeholder="(11) 99999-9999"
-                        required
-                      />
-                    </>
-                  )}
-
                   <Input
-                    label="E-MAIL OU USUÁRIO"
-                    name="email"
-                    type="text"
-                    placeholder="Insira seu e-mail ou usuário"
+                    label="NOME DA BARBEARIA"
+                    name="shopName"
+                    placeholder="EX: BARBER SHOP"
                     required
                   />
-
                   <Input
-                    label="SENHA"
-                    name="password"
-                    type="password"
-                    placeholder="Digite sua senha"
+                    label="WHATSAPP"
+                    name="phone"
+                    placeholder="(11) 99999-9999"
                     required
                   />
-
-                  <Button
-                    type="submit"
-                    className="w-full py-4 tracking-widest text-xs shadow-xl active:scale-[0.98] transition-transform"
-                  >
-                    {authMode === "login"
-                      ? "ACESSAR PAINEL"
-                      : "FINALIZAR CADASTRO"}
-                  </Button>
-
-                  {/* Divisor Visual */}
-                  <div className="relative flex items-center justify-center my-3">
-                    <div className="border-t border-white/10 w-full" />
-                    <span className="bg-slate-900 px-3 text-[9px] font-black uppercase tracking-wider text-slate-500 whitespace-nowrap">
-                      OU ENTRE COM
-                    </span>
-                    <div className="border-t border-white/10 w-full" />
-                  </div>
-
-                  {/* Botão Entrar com Google */}
-                  <button
-                    type="button"
-                    onClick={handleGoogleLogin}
-                    disabled={isGoogleLoading}
-                    className="w-full py-3 px-4 bg-white hover:bg-slate-100 text-slate-900 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 shadow-md active:scale-[0.98] cursor-pointer disabled:opacity-60"
-                  >
-                    {isGoogleLoading ? (
-                      <>
-                        <RefreshCw size={15} className="animate-spin text-slate-700" />
-                        <span>CONECTANDO COM O GOOGLE...</span>
-                      </>
-                    ) : (
-                      <>
-                        <GoogleIcon className="w-5 h-5" />
-                        <span>ENTRAR COM GOOGLE</span>
-                      </>
-                    )}
-                  </button>
-
-                  {authMode === "login" && (
-                    <button
-                      type="button"
-                      onClick={handleQuickDemoLogin}
-                      className="w-full py-2.5 px-3 bg-slate-900/80 hover:bg-slate-800 text-[#E1B15F] hover:text-white border border-[#E1B15F]/20 hover:border-[#E1B15F]/50 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-[0.98]"
-                    >
-                      <Scissors size={14} className="text-[#E1B15F]" />
-                      Acesso Rápido (Matheus Farias)
-                    </button>
-                  )}
-
-                  <div className="flex flex-col gap-3 mt-4 pt-2 border-t border-white/5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode(authMode === "login" ? "register" : "login");
-                        setAuthError(null);
-                        setResetSuccessMessage(null);
-                      }}
-                      className="w-full text-[10px] text-slate-400 hover:text-[#E1B15F] font-black uppercase tracking-widest transition-all cursor-pointer"
-                    >
-                      {authMode === "login"
-                        ? "CRIAR NOVA CONTA"
-                        : "VOLTAR PARA LOGIN"}
-                    </button>
-
-                    {authMode === "login" && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAuthMode("reset");
-                          setAuthError(null);
-                          setResetSuccessMessage(null);
-                        }}
-                        className="w-full text-[10px] text-slate-500 hover:text-white font-black uppercase tracking-widest transition-all cursor-pointer"
-                      >
-                        ESQUECI MINHA SENHA
-                      </button>
-                    )}
-                  </div>
                 </>
               )}
+
+              <Input
+                label="E-MAIL OU USUÁRIO"
+                name="email"
+                type="text"
+                placeholder="Insira seu e-mail ou usuário"
+                required
+              />
+
+              <Input
+                label={authMode === "reset" ? "NOVA SENHA" : "SENHA"}
+                name="password"
+                type="password"
+                placeholder="Digite sua senha"
+                required
+              />
+
+              <Button type="submit" className="w-full py-4 tracking-widest text-xs shadow-xl active:scale-[0.98] transition-transform">
+                {authMode === "login"
+                  ? "ACESSAR PAINEL"
+                  : authMode === "register"
+                    ? "FINALIZAR CADASTRO"
+                    : "CONFIRMAR NOVA SENHA"}
+              </Button>
+
+              {authMode === "login" && (
+                <button
+                  type="button"
+                  onClick={handleQuickDemoLogin}
+                  className="w-full py-2.5 px-3 bg-slate-900/80 hover:bg-slate-800 text-[#E1B15F] hover:text-white border border-[#E1B15F]/20 hover:border-[#E1B15F]/50 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer shadow-sm active:scale-[0.98]"
+                >
+                  <Scissors size={14} className="text-[#E1B15F]" />
+                  Acesso Rápido (Matheus Farias)
+                </button>
+              )}
+
+              <div className="flex flex-col gap-3 mt-4 pt-2 border-t border-white/5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode(authMode === "login" ? "register" : "login");
+                    setAuthError(null);
+                  }}
+                  className="w-full text-[10px] text-slate-400 hover:text-[#E1B15F] font-black uppercase tracking-widest transition-all cursor-pointer"
+                >
+                  {authMode === "login"
+                    ? "CRIAR NOVA CONTA"
+                    : "VOLTAR PARA LOGIN"}
+                </button>
+
+                {authMode === "login" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAuthMode("reset");
+                      setAuthError(null);
+                    }}
+                    className="w-full text-[10px] text-slate-500 hover:text-white font-black uppercase tracking-widest transition-all cursor-pointer"
+                  >
+                    ESQUECI MINHA SENHA
+                  </button>
+                )}
+              </div>
             </form>
           </Card>
-
-          {/* Modal de Vinculação de Conta Google para Novos Logins */}
-          {showGoogleLinkPrompt && pendingGoogleUser && (
-            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-300">
-              <div className="w-full max-w-lg">
-                <Card
-                  title="Vincular Conta Google"
-                  icon={<GoogleIcon className="w-5 h-5" />}
-                  actions={
-                    <button
-                      onClick={() => {
-                        setShowGoogleLinkPrompt(false);
-                        setPendingGoogleUser(null);
-                        setLinkExistingError(null);
-                      }}
-                      className="text-slate-400 hover:text-white cursor-pointer"
-                    >
-                      <X size={18} />
-                    </button>
-                  }
-                >
-                  <div className="space-y-6">
-                    <div className="flex items-center gap-3 p-3.5 bg-slate-900/90 rounded-2xl border border-white/10">
-                      {pendingGoogleUser.photoURL ? (
-                        <img
-                          src={pendingGoogleUser.photoURL}
-                          alt="Google avatar"
-                          className="w-12 h-12 rounded-full border border-white/20 object-cover shrink-0"
-                        />
-                      ) : (
-                        <div className="w-12 h-12 rounded-full bg-elite-red-500/20 border border-elite-red-500/30 flex items-center justify-center text-elite-red-400 font-bold shrink-0">
-                          <UserIcon size={20} />
-                        </div>
-                      )}
-                      <div className="min-w-0 flex-1">
-                        <p className="text-xs font-black text-white truncate">
-                          {pendingGoogleUser.displayName || "Usuário Google"}
-                        </p>
-                        <p className="text-[10px] text-slate-400 font-mono truncate">
-                          {pendingGoogleUser.email}
-                        </p>
-                        <span className="inline-flex items-center gap-1 mt-1 text-[8px] font-black uppercase text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
-                          <Check size={10} /> Conta Google Autenticada
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <p className="text-xs font-black text-white uppercase tracking-wider">
-                        Como você deseja acessar o sistema?
-                      </p>
-                      <p className="text-[11px] text-slate-400 leading-relaxed">
-                        Para preservar todos os cadastros, histórico e agendamentos existentes, selecione a opção desejada:
-                      </p>
-                    </div>
-
-                    {linkExistingError && (
-                      <p className="text-[10px] text-red-400 font-bold bg-red-500/10 p-2.5 rounded-xl border border-red-500/20">
-                        {linkExistingError}
-                      </p>
-                    )}
-
-                    {/* Opção 1: Vincular à Barbearia Matheus Farias */}
-                    <div className="p-4 bg-amber-500/10 hover:bg-amber-500/15 border-2 border-[#E1B15F]/40 hover:border-[#E1B15F] rounded-2xl transition-all cursor-pointer space-y-2">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-black uppercase text-[#E1B15F] tracking-wide flex items-center gap-1.5">
-                          <Crown size={14} className="text-[#E1B15F]" /> Vincular ao Perfil Principal
-                        </span>
-                        <Badge variant="warning" size="sm">RECOMENDADO</Badge>
-                      </div>
-                      <p className="text-[10px] text-slate-300 leading-relaxed font-medium">
-                        Conecta sua conta Google à <strong>Barbearia Matheus Farias</strong>, mantendo intactos todos os 320+ agendamentos, clientes, histórico financeiro e estoque já cadastrados.
-                      </p>
-                      <Button
-                        variant="primary"
-                        size="sm"
-                        className="w-full mt-2"
-                        onClick={async () => {
-                          const email = (pendingGoogleUser.email || "").toLowerCase().trim();
-                          const uid = pendingGoogleUser.uid;
-                          setGoogleLink(email, uid, "matheus_farias");
-                          try {
-                            await setDoc(doc(db, "users", "matheus_farias"), {
-                              linkedGoogleEmail: email,
-                              linkedGoogleUid: uid,
-                              googleLinked: true,
-                              linkedAt: new Date().toISOString(),
-                            }, { merge: true });
-                          } catch {}
-                          setSimulatedUser({
-                            uid: "matheus_farias",
-                            email: pendingGoogleUser.email,
-                            displayName: pendingGoogleUser.displayName || "Matheus Farias",
-                            photoURL: pendingGoogleUser.photoURL,
-                          });
-                          setIsAuthenticated(true);
-                          setShowGoogleLinkPrompt(false);
-                          setPendingGoogleUser(null);
-                          showToast("Conta Google vinculada com sucesso à Barbearia Matheus Farias!", "success");
-                        }}
-                      >
-                        CONECTAR A ESTE PERFIL EXISTENTE
-                      </Button>
-                    </div>
-
-                    {/* Opção 2: Vincular a outro usuário existente */}
-                    <div className="p-4 bg-slate-900/60 border border-white/10 rounded-2xl space-y-3">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-black uppercase text-slate-200 tracking-wide flex items-center gap-1.5">
-                          <KeyRound size={14} className="text-slate-400" /> Vincular a Outro Cadastro Existente
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-400 leading-relaxed">
-                        Se você já possui outro usuário e senha cadastrados no sistema, informe-os abaixo para vincular sua conta Google a ele:
-                      </p>
-                      <div className="space-y-2 pt-1">
-                        <Input
-                          label="USUÁRIO OU E-MAIL EXISTENTE"
-                          value={linkExistingUsername}
-                          onChange={(e) => setLinkExistingUsername(e.target.value)}
-                          placeholder="Ex: seu_usuario ou email"
-                        />
-                        <Input
-                          label="SENHA ATUAL DO PERFIL"
-                          type="password"
-                          value={linkExistingPassword}
-                          onChange={(e) => setLinkExistingPassword(e.target.value)}
-                          placeholder="Digite sua senha cadastrada"
-                        />
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="w-full mt-1"
-                          isLoading={isLinkingExisting}
-                          onClick={async () => {
-                            if (!linkExistingUsername || !linkExistingPassword) {
-                              setLinkExistingError("Informe o usuário e senha cadastrados.");
-                              return;
-                            }
-                            setIsLinkingExisting(true);
-                            setLinkExistingError(null);
-                            try {
-                              let cleanEmail = linkExistingUsername.trim();
-                              if (!cleanEmail.includes("@")) {
-                                cleanEmail = `${cleanEmail.toLowerCase().replace(/\s+/g, "")}@barbershop.com`;
-                              }
-                              let pass = linkExistingPassword;
-                              if (pass.length < 6) pass = pass.padEnd(6, "0");
-
-                              const registeredUsers = JSON.parse(localStorage.getItem("simdb_registered_users") || "{}");
-                              const existing = registeredUsers[cleanEmail.toLowerCase()];
-
-                              let targetUid = "";
-                              if (existing) {
-                                const hashed = await hashPassword(pass);
-                                if (existing.passHash ? existing.passHash !== hashed : existing.pass !== pass) {
-                                  setLinkExistingError("Senha incorreta.");
-                                  setIsLinkingExisting(false);
-                                  return;
-                                }
-                                targetUid = existing.uid;
-                                existing.linkedGoogleEmail = pendingGoogleUser.email;
-                                existing.linkedGoogleUid = pendingGoogleUser.uid;
-                                localStorage.setItem("simdb_registered_users", JSON.stringify(registeredUsers));
-                              } else if (
-                                cleanEmail.includes("matheus") ||
-                                cleanEmail.includes("admin")
-                              ) {
-                                if (pass !== "372087" && pass !== "1234" && pass !== "123400" && pass !== "37208700") {
-                                  setLinkExistingError("Senha incorreta.");
-                                  setIsLinkingExisting(false);
-                                  return;
-                                }
-                                targetUid = "matheus_farias";
-                              } else {
-                                setLinkExistingError("Perfil existente não encontrado com esses dados.");
-                                setIsLinkingExisting(false);
-                                return;
-                              }
-
-                              const email = (pendingGoogleUser.email || "").toLowerCase().trim();
-                              const uid = pendingGoogleUser.uid;
-                              setGoogleLink(email, uid, targetUid);
-
-                              try {
-                                await setDoc(doc(db, "users", targetUid), {
-                                  linkedGoogleEmail: email,
-                                  linkedGoogleUid: uid,
-                                  googleLinked: true,
-                                  linkedAt: new Date().toISOString(),
-                                }, { merge: true });
-                              } catch {}
-
-                              setSimulatedUser({
-                                uid: targetUid,
-                                email: pendingGoogleUser.email,
-                                displayName: pendingGoogleUser.displayName || linkExistingUsername,
-                                photoURL: pendingGoogleUser.photoURL,
-                              });
-                              setIsAuthenticated(true);
-                              setShowGoogleLinkPrompt(false);
-                              setPendingGoogleUser(null);
-                              showToast("Conta Google vinculada com sucesso ao seu cadastro existente!", "success");
-                            } catch (err: any) {
-                              setLinkExistingError("Erro ao vincular perfil: " + (err.message || "Tente novamente."));
-                            } finally {
-                              setIsLinkingExisting(false);
-                            }
-                          }}
-                        >
-                          CONFIRMAR E VINCULAR
-                        </Button>
-                      </div>
-                    </div>
-
-                    {/* Opção 3: Criar novo perfil individual */}
-                    <div className="pt-2 flex justify-between items-center text-[10px]">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const email = (pendingGoogleUser.email || "").toLowerCase().trim();
-                          const uid = pendingGoogleUser.uid;
-                          const username = email.split("@")[0].replace(/[^a-z0-9]/g, "_");
-                          const newUid = "user_" + username;
-
-                          setGoogleLink(email, uid, newUid);
-
-                          try {
-                            await setDoc(doc(db, "users", newUid), {
-                              username: pendingGoogleUser.displayName || username,
-                              shopName: `Barbearia de ${pendingGoogleUser.displayName || username}`,
-                              phone: "",
-                              profileImage: pendingGoogleUser.photoURL || DEFAULT_PROFILE_IMG,
-                              monthlyGoal: 5000,
-                              marketing_msg: "",
-                              campaign_goal: "",
-                              privacy_mode: false,
-                              linkedGoogleEmail: email,
-                              linkedGoogleUid: uid,
-                              googleLinked: true,
-                              linkedAt: new Date().toISOString(),
-                            });
-                          } catch {}
-
-                          setSimulatedUser({
-                            uid: newUid,
-                            email: pendingGoogleUser.email,
-                            displayName: pendingGoogleUser.displayName || username,
-                            photoURL: pendingGoogleUser.photoURL,
-                          });
-                          setIsAuthenticated(true);
-                          setShowGoogleLinkPrompt(false);
-                          setPendingGoogleUser(null);
-                          showToast("Novo perfil criado com sucesso!", "success");
-                        }}
-                        className="text-slate-400 hover:text-white font-medium underline cursor-pointer"
-                      >
-                        Prefiro criar um novo perfil individual em branco
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowGoogleLinkPrompt(false);
-                          setPendingGoogleUser(null);
-                          setLinkExistingError(null);
-                        }}
-                        className="text-slate-500 hover:text-red-400 font-bold uppercase cursor-pointer"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
-                </Card>
-              </div>
-            </div>
-          )}
-          {/* Modal Oficial de Seleção de Conta Google */}
-          {renderGoogleAccountPickerModal()}
-
           <div className="pt-2">
             <WoodenMouseSignature />
           </div>
@@ -5678,9 +4761,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen text-slate-100 flex overflow-hidden bg-transparent">
-      {/* Modal Oficial de Seleção de Conta Google */}
-      {renderGoogleAccountPickerModal()}
-
       {/* Edição de Cliente Modal */}
       {editingClient && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
@@ -10655,91 +9735,6 @@ const App: React.FC = () => {
                       </Button>
                     </div>
                   </div>
-                </div>
-              </Card>
-
-              {/* Card de Vinculação de Conta Google */}
-              <Card
-                title="VINCULAÇÃO DE CONTA GOOGLE"
-                icon={<GoogleIcon className="w-5 h-5" />}
-              >
-                <div className="space-y-5">
-                  <p className="text-[10px] text-slate-400 font-medium leading-relaxed">
-                    Vincule sua conta Google a este perfil para acessar o sistema de forma instantânea e segura utilizando o botão &quot;Entrar com Google&quot;. Todo o histórico de clientes, agendamentos e faturamento permanece 100% preservado.
-                  </p>
-
-                  {session?.googleLinked || session?.linkedGoogleEmail ? (
-                    <div className="p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl space-y-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
-                          <span className="text-xs font-black uppercase text-emerald-400 tracking-wider">
-                            Conta Google Vinculada
-                          </span>
-                        </div>
-                        <Badge variant="success" size="sm">
-                          CONECTADO
-                        </Badge>
-                      </div>
-
-                      <div className="p-3 bg-slate-950/80 rounded-xl border border-white/5">
-                        <p className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-0.5">
-                          E-mail Google Conectado
-                        </p>
-                        <p className="text-xs font-bold text-white font-mono break-all">
-                          {session.linkedGoogleEmail || "Conta Google Conectada"}
-                        </p>
-                        {session.linkedAt && (
-                          <p className="text-[8px] text-slate-500 mt-1">
-                            Vinculado em: {new Date(session.linkedAt).toLocaleDateString("pt-BR")} às {new Date(session.linkedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="pt-1 flex flex-col sm:flex-row gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="w-full text-red-400 border-red-500/30 hover:bg-red-500/10 hover:border-red-500 text-[10px] font-black uppercase tracking-wider cursor-pointer"
-                          onClick={handleUnlinkCurrentProfileFromGoogle}
-                        >
-                          <Trash2 size={13} /> DESVINCULAR CONTA GOOGLE
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="p-4 bg-slate-900/60 border border-white/10 rounded-2xl space-y-4">
-                      <div className="flex items-center gap-2">
-                        <AlertCircle size={16} className="text-[#E1B15F] shrink-0" />
-                        <span className="text-xs font-black uppercase text-slate-200 tracking-wider">
-                          Nenhuma Conta Google Vinculada
-                        </span>
-                      </div>
-
-                      <p className="text-[10px] text-slate-400 leading-relaxed">
-                        Ao vincular sua conta Google, você poderá entrar na sua barbearia com um único clique com o Google, sem precisar digitar usuário e senha.
-                      </p>
-
-                      <button
-                        type="button"
-                        onClick={handleLinkCurrentProfileWithGoogle}
-                        disabled={isGoogleLoading}
-                        className="w-full py-3 px-4 bg-white hover:bg-slate-100 text-slate-900 rounded-xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2.5 shadow-md active:scale-[0.98] cursor-pointer disabled:opacity-60"
-                      >
-                        {isGoogleLoading ? (
-                          <>
-                            <RefreshCw size={15} className="animate-spin text-slate-700" />
-                            <span>CONECTANDO COM O GOOGLE...</span>
-                          </>
-                        ) : (
-                          <>
-                            <GoogleIcon className="w-5 h-5" />
-                            <span>VINCULAR MINHA CONTA GOOGLE AGORA</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  )}
                 </div>
               </Card>
 

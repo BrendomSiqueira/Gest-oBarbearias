@@ -124,45 +124,20 @@ try {
   enableNetwork(firestoreDb).catch(() => {});
 } catch {}
 
-export const getGoogleLink = (emailOrUid: string): string | null => {
-  if (!emailOrUid) return null;
-  const key = emailOrUid.toLowerCase().trim();
-  try {
-    const raw = safeStorage.getItem('simdb_google_links');
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed[key]) return parsed[key];
-    }
-  } catch {}
-  return null;
+let activeUid = safeStorage.getItem('simdb_active_uid');
+if (!activeUid || activeUid === 'offline_demo' || activeUid.startsWith('user_')) {
+  activeUid = 'matheus_farias';
+  safeStorage.setItem('simdb_active_uid', 'matheus_farias');
+  safeStorage.setItem('simdb_active_email', 'matheus@barbershop.com');
+  safeStorage.setItem('simdb_active_name', 'Matheus Farias');
+}
+
+let simulatedUser: any = {
+  uid: activeUid,
+  email: safeStorage.getItem('simdb_active_email') || 'matheus@barbershop.com',
+  displayName: safeStorage.getItem('simdb_active_name') || 'Matheus Farias'
 };
 
-export const setGoogleLink = (googleEmail: string, googleUid: string, targetBarberId: string): void => {
-  try {
-    const raw = safeStorage.getItem('simdb_google_links');
-    const links = raw ? JSON.parse(raw) : {};
-    if (googleEmail) links[googleEmail.toLowerCase().trim()] = targetBarberId;
-    if (googleUid) links[googleUid.trim()] = targetBarberId;
-    safeStorage.setItem('simdb_google_links', JSON.stringify(links));
-  } catch (e) {
-    console.error('Error saving google link:', e);
-  }
-};
-
-export const removeGoogleLink = (googleEmail?: string, googleUid?: string): void => {
-  try {
-    const raw = safeStorage.getItem('simdb_google_links');
-    if (!raw) return;
-    const links = JSON.parse(raw);
-    if (googleEmail) delete links[googleEmail.toLowerCase().trim()];
-    if (googleUid) delete links[googleUid.trim()];
-    safeStorage.setItem('simdb_google_links', JSON.stringify(links));
-  } catch (e) {
-    console.error('Error removing google link:', e);
-  }
-};
-
-let simulatedUser: any = null;
 let onAuthStateCallbacks: Array<(user: any) => void> = [];
 
 export const setSimulatedUser = (user: any) => {
@@ -176,13 +151,7 @@ export const setSimulatedUser = (user: any) => {
     safeStorage.removeItem('simdb_active_email');
     safeStorage.removeItem('simdb_active_name');
   }
-  onAuthStateCallbacks.forEach(cb => {
-    try {
-      cb(user);
-    } catch (err) {
-      console.error('Auth state callback error:', err);
-    }
-  });
+  onAuthStateCallbacks.forEach(cb => cb(user));
 };
 
 export const auth = new Proxy(firebaseAuth, {
@@ -193,7 +162,7 @@ export const auth = new Proxy(firebaseAuth, {
     if (prop === 'onAuthStateChanged') {
       return (cb: (user: any) => void) => {
         onAuthStateCallbacks.push(cb);
-        // Call back immediately with current state
+        // Call back immediately with the active simulated user or real user
         cb(simulatedUser || firebaseAuth.currentUser);
         
         const unsub = firebaseAuth.onAuthStateChanged((user) => {
