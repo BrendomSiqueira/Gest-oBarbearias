@@ -31,6 +31,13 @@ export interface Drink {
   stock: number;
 }
 
+export interface BalanceAdjustment {
+  id: string;
+  amount: number;
+  reason: string;
+  date: string;
+}
+
 export interface Sale {
   id: string;
   itemId: string;

@@ -93,6 +93,7 @@ import {
 import { Button, Input, Card, Badge, IconButton, StatCard } from "./components/UI";
 import { SystemRepairModal } from "./components/SystemRepairModal";
 import { DuplicateClientsModal } from "./components/DuplicateClientsModal";
+import { FinancialReportsAudit } from "./components/FinancialReportsAudit";
 import { StorageService, hashPassword } from "./services/storage";
 import { GeminiService } from "./services/gemini";
 import { compressImage } from "./services/imageUtils";
@@ -999,6 +1000,7 @@ const App: React.FC = () => {
   const [editingApt, setEditingApt] = useState<Appointment | null>(null);
   const [isSubmittingApt, setIsSubmittingApt] = useState(false);
   const [isSubmittingEditApt, setIsSubmittingEditApt] = useState(false);
+  const [isSubmittingAdjustment, setIsSubmittingAdjustment] = useState(false);
   const [showDismissedInAgenda, setShowDismissedInAgenda] = useState(false);
   const [showGlobalAuditModal, setShowGlobalAuditModal] = useState(false);
   const [agendaMainView, setAgendaMainView] = useState<"active" | "confirmed" | "cancelled" | "all_history">("active");
@@ -1546,6 +1548,25 @@ const App: React.FC = () => {
         .length,
       yearlyCuts: compApts.filter((a) => a.date.startsWith(yearPrefix)).length,
       reportCuts: compApts.filter((a) => a.date.startsWith(reportMonth)).length,
+      reportPaidCuts: compApts.filter((a) => a.date.startsWith(reportMonth) && a.paid).length,
+      reportGrossRevenue:
+        compApts
+          .filter((a) => a.date.startsWith(reportMonth) && a.paid)
+          .reduce((acc, a) => acc + Number(a.finalPrice || 0), 0) +
+        sales
+          .filter((s) => s.date.startsWith(reportMonth))
+          .reduce((acc, s) => acc + Number(s.price || 0), 0),
+      reportCashAdjustments:
+        adjustments
+          .filter((a) => a.date.startsWith(reportMonth))
+          .reduce((acc, a) => acc + Number(a.amount || 0), 0),
+      reportTicketMedio: (() => {
+        const paidCount = compApts.filter((a) => a.date.startsWith(reportMonth) && a.paid).length;
+        const cutsTotal = compApts
+          .filter((a) => a.date.startsWith(reportMonth) && a.paid)
+          .reduce((acc, a) => acc + Number(a.finalPrice || 0), 0);
+        return paidCount > 0 ? cutsTotal / paidCount : 0;
+      })(),
       reportRevenue:
         compApts
           .filter((a) => a.date.startsWith(reportMonth) && a.paid)
@@ -1557,7 +1578,7 @@ const App: React.FC = () => {
           .filter((a) => a.date.startsWith(reportMonth))
           .reduce((acc, a) => acc + Number(a.amount || 0), 0),
       goalPercent: Math.min(
-        Math.round((monthlyRevTotal / (session?.monthlyGoal || 5000)) * 100),
+        Math.max(0, Math.round((monthlyRevTotal / (session?.monthlyGoal || 5000)) * 100)),
         100,
       ),
       chartData,
@@ -9024,21 +9045,42 @@ const App: React.FC = () => {
                       className="space-y-4"
                       onSubmit={async (e) => {
                         e.preventDefault();
+                        if (isSubmittingAdjustment) return;
                         const f = new FormData(e.target as HTMLFormElement);
                         const isAdd =
-                          (e.nativeEvent as any).submitter.name === "add";
-                        const amount = Number(f.get("a"));
+                          (e.nativeEvent as any).submitter?.name === "add";
+                        const rawAmount = Math.abs(Number(f.get("a") || 0));
+                        if (isNaN(rawAmount) || rawAmount <= 0) {
+                          showToast("Por favor, informe um valor válido maior que zero.", "error");
+                          return;
+                        }
+                        const reason = ((f.get("r") as string) || "").trim();
+                        if (!reason) {
+                          showToast("Informe o motivo do lançamento.", "error");
+                          return;
+                        }
+
+                        // Proteção contra saídas de alto valor por engano (ex: digitação acidental de 10.000)
+                        if (!isAdd && rawAmount >= 500) {
+                          const confirmed = window.confirm(
+                            `Atenção: Você está registrando uma RETIRADA de ${formatCurrency(rawAmount)} do caixa. Deseja realmente confirmar esta saída?`
+                          );
+                          if (!confirmed) return;
+                        }
+
                         const id = Date.now().toString();
                         const userId = effectiveUserId;
                         if (!userId) return;
+
+                        setIsSubmittingAdjustment(true);
                         try {
                           await setDoc(
                             doc(db, "users", userId, "adjustments", id),
                             {
                               id,
-                              amount: isAdd ? amount : -amount,
-                              reason: f.get("r") as string,
-                              date: new Date().toISOString().split("T")[0],
+                              amount: isAdd ? rawAmount : -rawAmount,
+                              reason,
+                              date: getLocalDateString(),
                             },
                           );
                           (e.target as HTMLFormElement).reset();
@@ -9046,6 +9088,7 @@ const App: React.FC = () => {
                             isAdd
                               ? "Entrada registrada com sucesso!"
                               : "Retirada registrada com sucesso!",
+                            "success"
                           );
                         } catch (err) {
                           handleFirestoreError(
@@ -9053,6 +9096,8 @@ const App: React.FC = () => {
                             OperationType.WRITE,
                             `users/${userId}/adjustments/${id}`,
                           );
+                        } finally {
+                          setIsSubmittingAdjustment(false);
                         }
                       }}
                     >
@@ -9061,14 +9106,17 @@ const App: React.FC = () => {
                         name="a"
                         type="number"
                         step="0.01"
+                        min="0.01"
                         placeholder="R$ 0,00"
                         required
+                        disabled={isSubmittingAdjustment}
                       />
                       <Input 
                         label="MOTIVO DO LANÇAMENTO"
                         name="r" 
                         placeholder="Ex: Pagamento comissão / Troco" 
                         required 
+                        disabled={isSubmittingAdjustment}
                       />
                       <div className="grid grid-cols-2 gap-3 pt-1">
                         <Button
@@ -9077,6 +9125,8 @@ const App: React.FC = () => {
                           variant="success"
                           size="md"
                           className="w-full"
+                          disabled={isSubmittingAdjustment}
+                          isLoading={isSubmittingAdjustment}
                         >
                           + ENTRADA
                         </Button>
@@ -9086,6 +9136,8 @@ const App: React.FC = () => {
                           variant="danger"
                           size="md"
                           className="w-full"
+                          disabled={isSubmittingAdjustment}
+                          isLoading={isSubmittingAdjustment}
                         >
                           - SAÍDA
                         </Button>
@@ -9999,22 +10051,41 @@ const App: React.FC = () => {
                   <h3 className="text-4xl font-black text-white">
                     {stats.reportCuts}
                   </h3>
+                  <p className="text-[10px] text-slate-400 mt-2 font-medium">
+                    {stats.reportPaidCuts} quitados • Ticket médio: {formatCurrency(stats.reportTicketMedio)}
+                  </p>
                 </div>
                 <div className="bg-emerald-500/5 border border-emerald-500/10 p-8 rounded-[32px] shadow-xl">
                   <p className="text-[10px] font-black text-emerald-500 uppercase tracking-widest mb-1">
-                    Dinheiro Rendido
+                    Faturamento Operacional
                   </p>
-                  <h3 className="text-4xl font-black text-white">
+                  <h3 className="text-4xl font-black text-emerald-400 font-mono">
+                    {formatCurrency(stats.reportGrossRevenue)}
+                  </h3>
+                  <p className="text-[10px] text-emerald-400/80 mt-2 font-medium">
+                    Cortes + Balcão (Receita 100% positiva)
+                  </p>
+                </div>
+                <div className={`p-8 rounded-[32px] shadow-xl border ${
+                  stats.reportRevenue >= 0
+                    ? "bg-slate-900/40 border-white/5"
+                    : "bg-rose-500/5 border-rose-500/30"
+                }`}>
+                  <p className={`text-[10px] font-black uppercase tracking-widest mb-1 ${
+                    stats.reportRevenue >= 0 ? "text-slate-400" : "text-rose-400"
+                  }`}>
+                    Saldo Líquido em Caixa
+                  </p>
+                  <h3 className={`text-4xl font-black font-mono ${
+                    stats.reportRevenue >= 0 ? "text-white" : "text-rose-400"
+                  }`}>
                     {formatCurrency(stats.reportRevenue)}
                   </h3>
-                </div>
-                <div className="bg-slate-900/40 border border-white/5 p-8 rounded-[32px] shadow-xl">
-                  <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
-                    Produtividade Ano
+                  <p className="text-[10px] text-slate-400 mt-2 font-medium">
+                    {stats.reportCashAdjustments < 0
+                      ? `Impactado por retiradas (${formatCurrency(stats.reportCashAdjustments)})`
+                      : "Conciliado com livro caixa"}
                   </p>
-                  <h3 className="text-4xl font-black text-white">
-                    {stats.yearlyCuts}
-                  </h3>
                 </div>
                 <div className="bg-slate-900/40 border border-white/5 p-8 rounded-[32px] shadow-xl">
                   <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">
@@ -10023,10 +10094,24 @@ const App: React.FC = () => {
                   <h3 className="text-4xl font-black text-white">
                     {stats.goalPercent}%
                   </h3>
+                  <p className="text-[10px] text-slate-400 mt-2 font-medium">
+                    Meta mensal: {formatCurrency(session?.monthlyGoal || 5000)}
+                  </p>
                 </div>
               </div>
 
-              <Card title="Desempenho Semestral" className="shadow-2xl">
+              {/* Componente de Auditoria Financeira, Comparativos e Diagnóstico de Valores Negativos */}
+              <FinancialReportsAudit
+                appointments={appointments}
+                sales={sales}
+                adjustments={adjustments}
+                currentReportMonth={reportMonth}
+                onSelectMonth={(m) => setReportMonth(m)}
+                userId={effectiveUserId || ""}
+                showToast={showToast}
+              />
+
+              <Card title="Desempenho Semestral de Atendimentos" className="shadow-2xl">
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={stats.monthlyReportData}>
