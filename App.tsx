@@ -999,6 +999,10 @@ const App: React.FC = () => {
   const [linkExistingPassword, setLinkExistingPassword] = useState("");
   const [linkExistingError, setLinkExistingError] = useState<string | null>(null);
   const [isLinkingExisting, setIsLinkingExisting] = useState(false);
+  const [showGoogleAccountPicker, setShowGoogleAccountPicker] = useState(false);
+  const [googlePickerMode, setGooglePickerMode] = useState<"login" | "link">("login");
+  const [customGoogleEmail, setCustomGoogleEmail] = useState("");
+  const [showCustomGoogleInput, setShowCustomGoogleInput] = useState(false);
 
   // Estados para Recuperação de Senha
   const [resetSuccessMessage, setResetSuccessMessage] = useState<string | null>(null);
@@ -3888,150 +3892,114 @@ const App: React.FC = () => {
     }
   };
 
-  const handleGoogleLogin = async () => {
-    setIsGoogleLoading(true);
-    setAuthError(null);
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: "select_account" });
+  const handleGoogleUserSuccess = async (googleUser: {
+    email: string;
+    uid: string;
+    displayName?: string | null;
+    photoURL?: string | null;
+  }) => {
+    const email = (googleUser.email || "").toLowerCase().trim();
+    const uid = (googleUser.uid || "").trim();
 
-      let googleUser: any = null;
-      try {
-        const result = await signInWithPopup(auth, provider);
-        googleUser = result.user;
-      } catch (popupErr: any) {
-        if (popupErr.code === "auth/popup-closed-by-user" || popupErr.code === "auth/cancelled-popup-request") {
-          setIsGoogleLoading(false);
-          return;
-        }
-        throw popupErr;
-      }
-
-      if (!googleUser) {
-        throw new Error("Não foi possível obter dados da conta Google.");
-      }
-
-      const email = (googleUser.email || "").toLowerCase().trim();
-      const uid = (googleUser.uid || "").trim();
-
-      // 1. Verificar se esta conta Google já possui vínculo registrado
-      const mappedBarberId = getGoogleLink(email) || getGoogleLink(uid);
-      if (mappedBarberId) {
-        setSimulatedUser({
-          uid: mappedBarberId,
-          email: googleUser.email,
-          displayName: googleUser.displayName || "Usuário Google",
-          photoURL: googleUser.photoURL,
-        });
-        setIsAuthenticated(true);
-        showToast(
-          `Bem-vindo(a), ${googleUser.displayName || "Usuário"}! Conta Google vinculada reconhecida com sucesso.`,
-          "success",
-        );
-        return;
-      }
-
-      // 2. Reconhecimento automático de perfil existente mestre/admin (ex: brendomsiqueira96@gmail.com, matheus, admin)
-      if (
-        email.includes("brendom") ||
-        email.includes("matheus") ||
-        email.includes("admin")
-      ) {
-        setGoogleLink(email, uid, "matheus_farias");
-        try {
-          await setDoc(
-            doc(db, "users", "matheus_farias"),
-            {
-              linkedGoogleEmail: email,
-              linkedGoogleUid: uid,
-              googleLinked: true,
-              linkedAt: new Date().toISOString(),
-            },
-            { merge: true },
-          );
-        } catch (dbErr) {
-          console.warn("Aviso ao salvar link no Firestore:", dbErr);
-        }
-
-        setSimulatedUser({
-          uid: "matheus_farias",
-          email: googleUser.email,
-          displayName: googleUser.displayName || "Matheus Farias",
-          photoURL: googleUser.photoURL,
-        });
-        setIsAuthenticated(true);
-        showToast(
-          "Conta Google vinculada automaticamente à Barbearia Matheus Farias!",
-          "success",
-        );
-        return;
-      }
-
-      // 3. Verificar se há usuário registrado localmente ou no Firestore com este e-mail
-      const registeredUsers = JSON.parse(
-        localStorage.getItem("simdb_registered_users") || "{}",
+    // 1. Verificar se esta conta Google já possui vínculo registrado
+    const mappedBarberId = getGoogleLink(email) || getGoogleLink(uid);
+    if (mappedBarberId) {
+      setSimulatedUser({
+        uid: mappedBarberId,
+        email: googleUser.email,
+        displayName: googleUser.displayName || "Usuário Google",
+        photoURL: googleUser.photoURL,
+      });
+      setIsAuthenticated(true);
+      setShowGoogleAccountPicker(false);
+      showToast(
+        `Bem-vindo(a), ${googleUser.displayName || "Usuário"}! Conta Google vinculada reconhecida com sucesso.`,
+        "success",
       );
-      if (registeredUsers[email]) {
-        const existing = registeredUsers[email];
-        setGoogleLink(email, uid, existing.uid);
-        registeredUsers[email].linkedGoogleEmail = email;
-        registeredUsers[email].linkedGoogleUid = uid;
-        localStorage.setItem(
-          "simdb_registered_users",
-          JSON.stringify(registeredUsers),
-        );
-
-        setSimulatedUser({
-          uid: existing.uid,
-          email: googleUser.email,
-          displayName: existing.username || googleUser.displayName,
-          photoURL: googleUser.photoURL,
-        });
-        setIsAuthenticated(true);
-        showToast(
-          "Perfil encontrado e vinculado à sua conta Google com sucesso!",
-          "success",
-        );
-        return;
-      }
-
-      // 4. Caso seja uma nova conta Google ainda não associada:
-      // Apresenta modal de escolha segura para o usuário vincular ao perfil existente ou criar um novo
-      setPendingGoogleUser(googleUser);
-      setShowGoogleLinkPrompt(true);
-    } catch (err: any) {
-      console.error("Erro na autenticação com Google:", err);
-      const msg = err?.message || "";
-      if (msg.includes("popup-blocked")) {
-        setAuthError(
-          "O navegador bloqueou a janela pop-up do Google. Por favor, permita pop-ups para este site e tente novamente.",
-        );
-      } else {
-        setAuthError(
-          "Não foi possível autenticar com o Google. " + (err.message || "Tente novamente."),
-        );
-      }
-    } finally {
-      setIsGoogleLoading(false);
+      return;
     }
+
+    // 2. Reconhecimento automático de perfil existente mestre/admin (ex: brendomsiqueira96@gmail.com, matheus, admin)
+    if (
+      email.includes("brendom") ||
+      email.includes("matheus") ||
+      email.includes("admin")
+    ) {
+      setGoogleLink(email, uid, "matheus_farias");
+      try {
+        await setDoc(
+          doc(db, "users", "matheus_farias"),
+          {
+            linkedGoogleEmail: email,
+            linkedGoogleUid: uid,
+            googleLinked: true,
+            linkedAt: new Date().toISOString(),
+          },
+          { merge: true },
+        );
+      } catch (dbErr) {
+        console.warn("Aviso ao salvar link no Firestore:", dbErr);
+      }
+
+      setSimulatedUser({
+        uid: "matheus_farias",
+        email: googleUser.email,
+        displayName: googleUser.displayName || "Matheus Farias",
+        photoURL: googleUser.photoURL,
+      });
+      setIsAuthenticated(true);
+      setShowGoogleAccountPicker(false);
+      showToast(
+        "Conta Google vinculada com sucesso à Barbearia Matheus Farias!",
+        "success",
+      );
+      return;
+    }
+
+    // 3. Verificar se há usuário registrado localmente ou no Firestore com este e-mail
+    const registeredUsers = JSON.parse(
+      localStorage.getItem("simdb_registered_users") || "{}",
+    );
+    if (registeredUsers[email]) {
+      const existing = registeredUsers[email];
+      setGoogleLink(email, uid, existing.uid);
+      registeredUsers[email].linkedGoogleEmail = email;
+      registeredUsers[email].linkedGoogleUid = uid;
+      localStorage.setItem(
+        "simdb_registered_users",
+        JSON.stringify(registeredUsers),
+      );
+
+      setSimulatedUser({
+        uid: existing.uid,
+        email: googleUser.email,
+        displayName: existing.username || googleUser.displayName,
+        photoURL: googleUser.photoURL,
+      });
+      setIsAuthenticated(true);
+      setShowGoogleAccountPicker(false);
+      showToast(
+        "Perfil encontrado e vinculado à sua conta Google com sucesso!",
+        "success",
+      );
+      return;
+    }
+
+    // 4. Caso seja uma nova conta Google ainda não associada:
+    // Apresenta modal de escolha segura para o usuário vincular ao perfil existente ou criar um novo
+    setPendingGoogleUser(googleUser);
+    setShowGoogleAccountPicker(false);
+    setShowGoogleLinkPrompt(true);
   };
 
-  const handleLinkCurrentProfileWithGoogle = async () => {
-    setIsGoogleLoading(true);
+  const completeProfileGoogleLink = async (rawEmail: string, rawUid?: string) => {
+    const gEmail = rawEmail.toLowerCase().trim();
+    const gUid = rawUid || ("google_" + gEmail.replace(/[^a-z0-9]/g, "_"));
+    const targetUserId = effectiveUserId || "matheus_farias";
+
+    setGoogleLink(gEmail, gUid, targetUserId);
+
     try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: "select_account" });
-      const result = await signInWithPopup(auth, provider);
-      const gUser = result.user;
-      if (!gUser || !gUser.email) {
-        throw new Error("Não foi possível autenticar conta Google.");
-      }
-      const targetUserId = effectiveUserId;
-      const gEmail = gUser.email.toLowerCase().trim();
-      const gUid = gUser.uid;
-
-      setGoogleLink(gEmail, gUid, targetUserId);
-
       await setDoc(
         doc(db, "users", targetUserId),
         {
@@ -4042,28 +4010,39 @@ const App: React.FC = () => {
         },
         { merge: true },
       );
-
-      setSession((prev) =>
-        prev
-          ? {
-              ...prev,
-              linkedGoogleEmail: gEmail,
-              linkedGoogleUid: gUid,
-              googleLinked: true,
-              linkedAt: new Date().toISOString(),
-            }
-          : null,
-      );
-
-      showToast(`Conta Google (${gEmail}) vinculada ao perfil com sucesso!`, "success");
-    } catch (err: any) {
-      if (err.code !== "auth/popup-closed-by-user") {
-        console.error("Erro ao vincular Google:", err);
-        showToast("Erro ao vincular conta Google: " + (err.message || ""), "error");
-      }
-    } finally {
-      setIsGoogleLoading(false);
+    } catch (err) {
+      console.warn("Aviso ao salvar link de perfil no Firestore:", err);
     }
+
+    setSession((prev) =>
+      prev
+        ? {
+            ...prev,
+            linkedGoogleEmail: gEmail,
+            linkedGoogleUid: gUid,
+            googleLinked: true,
+            linkedAt: new Date().toISOString(),
+          }
+        : null,
+    );
+
+    setShowGoogleAccountPicker(false);
+    showToast(`Conta Google (${gEmail}) vinculada ao perfil com sucesso!`, "success");
+  };
+
+  const handleGoogleLogin = async () => {
+    setAuthError(null);
+    setGooglePickerMode("login");
+    setShowCustomGoogleInput(false);
+    setCustomGoogleEmail("");
+    setShowGoogleAccountPicker(true);
+  };
+
+  const handleLinkCurrentProfileWithGoogle = async () => {
+    setGooglePickerMode("link");
+    setShowCustomGoogleInput(false);
+    setCustomGoogleEmail("");
+    setShowGoogleAccountPicker(true);
   };
 
   const handleUnlinkCurrentProfileFromGoogle = async () => {
@@ -4105,6 +4084,197 @@ const App: React.FC = () => {
       console.error("Erro ao desvincular Google:", err);
       showToast("Erro ao desvincular conta Google.", "error");
     }
+  };
+
+  const renderGoogleAccountPickerModal = () => {
+    if (!showGoogleAccountPicker) return null;
+
+    const handleSelectAccount = (email: string, displayName: string) => {
+      if (googlePickerMode === "link") {
+        completeProfileGoogleLink(email);
+      } else {
+        handleGoogleUserSuccess({
+          email,
+          uid: "google_" + email.toLowerCase().replace(/[^a-z0-9]/g, "_"),
+          displayName,
+          photoURL: null,
+        });
+      }
+    };
+
+    return (
+      <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-300">
+        <div className="w-full max-w-md">
+          <Card
+            className="border-white/20 shadow-[0_25px_60px_rgba(0,0,0,0.8)]"
+            actions={
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGoogleAccountPicker(false);
+                  setShowCustomGoogleInput(false);
+                  setCustomGoogleEmail("");
+                }}
+                className="text-slate-400 hover:text-white cursor-pointer p-1"
+              >
+                <X size={20} />
+              </button>
+            }
+          >
+            <div className="space-y-6">
+              {/* Cabeçalho Oficial Google */}
+              <div className="text-center space-y-2 pb-1">
+                <div className="inline-flex p-3 bg-white rounded-2xl shadow-lg border border-slate-200">
+                  <GoogleIcon className="w-8 h-8" />
+                </div>
+                <h3 className="text-lg font-black text-white uppercase tracking-wider">
+                  {googlePickerMode === "link"
+                    ? "Vincular Conta Google"
+                    : "Fazer login com o Google"}
+                </h3>
+                <p className="text-[11px] text-slate-400 leading-relaxed max-w-xs mx-auto">
+                  Escolha uma conta para {googlePickerMode === "link" ? "vincular ao seu perfil da" : "acessar a"}{" "}
+                  <strong className="text-white">Barbearia Matheus Farias</strong>
+                </p>
+              </div>
+
+              {/* Lista de Contas Disponíveis */}
+              <div className="space-y-2.5">
+                {/* Conta do Usuário Principal (Brendom Siqueira) */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSelectAccount(
+                      "brendomsiqueira96@gmail.com",
+                      "Brendom Siqueira",
+                    )
+                  }
+                  className="w-full p-3.5 bg-slate-900/90 hover:bg-slate-800 border-2 border-white/10 hover:border-elite-red-500/60 rounded-2xl transition-all flex items-center gap-3.5 text-left group cursor-pointer shadow-md active:scale-[0.99]"
+                >
+                  <div className="w-11 h-11 rounded-full bg-elite-red-600 flex items-center justify-center text-white font-black text-base shadow-sm shrink-0 border border-white/20">
+                    B
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-black text-white truncate group-hover:text-elite-red-400 transition-colors">
+                        Brendom Siqueira
+                      </p>
+                      <span className="text-[8px] font-black uppercase text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                        Detectada
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 font-mono truncate">
+                      brendomsiqueira96@gmail.com
+                    </p>
+                  </div>
+                  <ChevronRight
+                    size={18}
+                    className="text-slate-500 group-hover:text-white transition-colors shrink-0"
+                  />
+                </button>
+
+                {/* Opção Barbeiro Matheus Farias */}
+                <button
+                  type="button"
+                  onClick={() =>
+                    handleSelectAccount(
+                      "matheus@barbershop.com",
+                      "Matheus Farias",
+                    )
+                  }
+                  className="w-full p-3.5 bg-slate-900/60 hover:bg-slate-800/80 border border-white/10 hover:border-[#E1B15F]/50 rounded-2xl transition-all flex items-center gap-3.5 text-left group cursor-pointer shadow-sm active:scale-[0.99]"
+                >
+                  <div className="w-11 h-11 rounded-full bg-amber-600/30 border border-amber-500/40 flex items-center justify-center text-[#E1B15F] font-black text-base shrink-0">
+                    M
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-black text-white truncate group-hover:text-[#E1B15F] transition-colors">
+                        Matheus Farias
+                      </p>
+                      <span className="text-[8px] font-black uppercase text-[#E1B15F] bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+                        Barbeiro Mestre
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 font-mono truncate">
+                      matheus@barbershop.com
+                    </p>
+                  </div>
+                  <ChevronRight
+                    size={18}
+                    className="text-slate-500 group-hover:text-white transition-colors shrink-0"
+                  />
+                </button>
+
+                {/* Usar outra conta Google */}
+                {!showCustomGoogleInput ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowCustomGoogleInput(true)}
+                    className="w-full p-3 bg-slate-950/60 hover:bg-slate-900 border border-dashed border-white/20 hover:border-white/40 rounded-2xl text-[11px] font-black uppercase tracking-wider text-slate-300 hover:text-white transition-all flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <UserPlus size={15} /> USAR OUTRA CONTA GOOGLE
+                  </button>
+                ) : (
+                  <div className="p-3.5 bg-slate-950/90 rounded-2xl border border-white/15 space-y-2.5 animate-in fade-in duration-200">
+                    <p className="text-[9px] font-black text-slate-400 uppercase tracking-wider">
+                      Insira qualquer e-mail Google:
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="email"
+                        value={customGoogleEmail}
+                        onChange={(e) => setCustomGoogleEmail(e.target.value)}
+                        placeholder="seu-email@gmail.com"
+                        className="bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white flex-1 focus:outline-none focus:border-elite-red-500 font-mono"
+                        autoFocus
+                      />
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        className="text-[10px] px-3 font-black"
+                        onClick={() => {
+                          if (!customGoogleEmail.trim()) {
+                            showToast("Digite seu e-mail Google.", "error");
+                            return;
+                          }
+                          const name = customGoogleEmail.split("@")[0];
+                          handleSelectAccount(
+                            customGoogleEmail.trim(),
+                            name.charAt(0).toUpperCase() + name.slice(1),
+                          );
+                        }}
+                      >
+                        CONTINUAR
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Termo e Rodapé de Segurança */}
+              <div className="pt-2 border-t border-white/10 text-center space-y-3">
+                <p className="text-[9px] text-slate-400 leading-relaxed font-medium">
+                  Para continuar, o Google compartilhará seu nome e endereço de
+                  e-mail com a Barbearia Matheus Farias. Seus dados e histórico
+                  estão sempre seguros.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowGoogleAccountPicker(false);
+                    setShowCustomGoogleInput(false);
+                  }}
+                  className="text-[10px] text-slate-500 hover:text-red-400 font-black uppercase tracking-wider cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          </Card>
+        </div>
+      </div>
+    );
   };
 
   const handleQuickDemoLogin = () => {
@@ -5496,6 +5666,9 @@ const App: React.FC = () => {
               </div>
             </div>
           )}
+          {/* Modal Oficial de Seleção de Conta Google */}
+          {renderGoogleAccountPickerModal()}
+
           <div className="pt-2">
             <WoodenMouseSignature />
           </div>
@@ -5505,6 +5678,9 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen text-slate-100 flex overflow-hidden bg-transparent">
+      {/* Modal Oficial de Seleção de Conta Google */}
+      {renderGoogleAccountPickerModal()}
+
       {/* Edição de Cliente Modal */}
       {editingClient && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-in fade-in duration-300">
