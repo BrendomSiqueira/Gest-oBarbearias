@@ -12,7 +12,11 @@
         "monthlyGoal": { "type": "number" },
         "marketing_msg": { "type": "string" },
         "campaign_goal": { "type": "string" },
-        "privacy_mode": { "type": "boolean" }
+        "privacy_mode": { "type": "boolean" },
+        "linkedGoogleEmail": { "type": "string" },
+        "linkedGoogleUid": { "type": "string" },
+        "googleLinked": { "type": "boolean" },
+        "linkedAt": { "type": "string" }
       },
       "required": ["username", "shopName"]
     },

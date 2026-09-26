@@ -114,6 +114,10 @@ export interface UserSession {
   unavailableSlots?: UnavailableSlot[];
   autoCancelExpired?: boolean;
   autoCancelMinutes?: number;
+  linkedGoogleEmail?: string;
+  linkedGoogleUid?: string;
+  googleLinked?: boolean;
+  linkedAt?: string;
 }
 
 export enum Tab {
