@@ -75,6 +75,9 @@ service cloud.firestore {
              data.username is string && data.username.size() > 0 && data.username.size() <= 50 &&
              (!('shopName' in data) || (data.shopName is string && data.shopName.size() <= 100)) &&
              (!('phone' in data) || (data.phone is string && data.phone.size() <= 30)) &&
+             (!('email' in data) || (data.email is string && data.email.size() <= 120)) &&
+             (!('cpf' in data) || (data.cpf is string && data.cpf.size() <= 30)) &&
+             (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 200)) &&
              (!('monthlyGoal' in data) || (data.monthlyGoal is number && data.monthlyGoal >= 0)) &&
              (!('marketing_msg' in data) || (data.marketing_msg is string && data.marketing_msg.size() <= 5000)) &&
              (!('campaign_goal' in data) || (data.campaign_goal is string && data.campaign_goal.size() <= 2000)) &&

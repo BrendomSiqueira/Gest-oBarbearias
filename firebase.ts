@@ -124,29 +124,48 @@ try {
   enableNetwork(firestoreDb).catch(() => {});
 } catch {}
 
-let activeUid = safeStorage.getItem('simdb_active_uid');
-if (!activeUid || activeUid === 'offline_demo' || activeUid.startsWith('user_')) {
-  activeUid = 'matheus_farias';
-  safeStorage.setItem('simdb_active_uid', 'matheus_farias');
-  safeStorage.setItem('simdb_active_email', 'matheus@barbershop.com');
-  safeStorage.setItem('simdb_active_name', 'Matheus Farias');
-}
+let simulatedUser: any = null;
 
-let simulatedUser: any = {
-  uid: activeUid,
-  email: safeStorage.getItem('simdb_active_email') || 'matheus@barbershop.com',
-  displayName: safeStorage.getItem('simdb_active_name') || 'Matheus Farias'
-};
+// Only restore simulated user if an authenticated session exists for this browser tab/window
+try {
+  if (typeof sessionStorage !== 'undefined' && sessionStorage.getItem('system_authenticated') === 'true') {
+    const activeUid = safeStorage.getItem('simdb_active_uid');
+    if (activeUid) {
+      simulatedUser = {
+        uid: activeUid,
+        email: safeStorage.getItem('simdb_active_email') || '',
+        displayName: safeStorage.getItem('simdb_active_name') || ''
+      };
+    }
+  } else {
+    // When system is freshly opened, guarantee clean unauthenticated state
+    safeStorage.removeItem('simdb_active_uid');
+    safeStorage.removeItem('simdb_active_email');
+    safeStorage.removeItem('simdb_active_name');
+  }
+} catch {
+  simulatedUser = null;
+}
 
 let onAuthStateCallbacks: Array<(user: any) => void> = [];
 
 export const setSimulatedUser = (user: any) => {
   simulatedUser = user;
   if (user) {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.setItem('system_authenticated', 'true');
+      }
+    } catch {}
     safeStorage.setItem('simdb_active_uid', user.uid);
     safeStorage.setItem('simdb_active_email', user.email || '');
     safeStorage.setItem('simdb_active_name', user.displayName || '');
   } else {
+    try {
+      if (typeof sessionStorage !== 'undefined') {
+        sessionStorage.removeItem('system_authenticated');
+      }
+    } catch {}
     safeStorage.removeItem('simdb_active_uid');
     safeStorage.removeItem('simdb_active_email');
     safeStorage.removeItem('simdb_active_name');
@@ -157,22 +176,29 @@ export const setSimulatedUser = (user: any) => {
 export const auth = new Proxy(firebaseAuth, {
   get(target, prop, receiver) {
     if (prop === 'currentUser') {
+      const isSessionActive = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('system_authenticated') === 'true';
+      if (!isSessionActive) return null;
       return simulatedUser || firebaseAuth.currentUser;
     }
     if (prop === 'onAuthStateChanged') {
       return (cb: (user: any) => void) => {
         onAuthStateCallbacks.push(cb);
-        // Call back immediately with the active simulated user or real user
-        cb(simulatedUser || firebaseAuth.currentUser);
+        const isSessionActive = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('system_authenticated') === 'true';
+        if (isSessionActive && (simulatedUser || firebaseAuth.currentUser)) {
+          cb(simulatedUser || firebaseAuth.currentUser);
+        } else {
+          cb(null);
+        }
         
         const unsub = firebaseAuth.onAuthStateChanged((user) => {
-          if (user) {
+          const currentSessionActive = typeof sessionStorage !== 'undefined' && sessionStorage.getItem('system_authenticated') === 'true';
+          if (user && currentSessionActive) {
             safeStorage.setItem('simdb_active_uid', user.uid);
             safeStorage.setItem('simdb_active_email', user.email || '');
             safeStorage.setItem('simdb_active_name', user.displayName || '');
           }
           if (!simulatedUser) {
-            cb(user);
+            cb(currentSessionActive ? user : null);
           }
         });
         return () => {
@@ -184,6 +210,11 @@ export const auth = new Proxy(firebaseAuth, {
     if (prop === 'signOut') {
       return async () => {
         simulatedUser = null;
+        try {
+          if (typeof sessionStorage !== 'undefined') {
+            sessionStorage.removeItem('system_authenticated');
+          }
+        } catch {}
         safeStorage.removeItem('simdb_active_uid');
         safeStorage.removeItem('simdb_active_email');
         safeStorage.removeItem('simdb_active_name');
@@ -609,9 +640,10 @@ export function isQuotaOrAvailabilityError(err: unknown): boolean {
 export function activateContingencyMode(reason?: string) {
   safeStorage.setItem('force_offline', 'true');
   safeStorage.setItem('firestore_quota_exhausted', 'true');
-  safeStorage.setItem('firestore_quota_exhausted_time', Date.now().toString());
-  const currentUid = auth.currentUser?.uid || 'matheus_farias';
-  safeStorage.setItem('simdb_active_uid', currentUid);
+  const currentUid = auth.currentUser?.uid;
+  if (currentUid) {
+    safeStorage.setItem('simdb_active_uid', currentUid);
+  }
   try {
     disableNetwork(firestoreDb).catch(() => {});
   } catch {}

@@ -108,6 +108,9 @@ export interface UserSession {
   username: string;
   shopName: string;
   phone: string;
+  email?: string;
+  cpf?: string;
+  passwordHash?: string;
   profileImage?: string;
   monthlyGoal?: number;
   businessHours?: BusinessHours;
