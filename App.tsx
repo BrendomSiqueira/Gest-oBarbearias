@@ -27,6 +27,7 @@ import {
   Smartphone,
   ShieldCheck,
   Shield,
+  ShieldAlert,
   Mail,
   Edit3,
   Save,
@@ -96,6 +97,23 @@ import { Button, Input, Card, Badge, IconButton, StatCard } from "./components/U
 import { SystemRepairModal } from "./components/SystemRepairModal";
 import { DuplicateClientsModal } from "./components/DuplicateClientsModal";
 import { FinancialReportsAudit } from "./components/FinancialReportsAudit";
+import { SecurityAuditModal } from "./components/SecurityAuditModal";
+import {
+  generateSignedBookingUrl,
+  verifySignedToken,
+  redeemSingleUseToken,
+  sanitizeInput,
+  SignedLinkToken,
+} from "./services/tokenSecurity";
+import {
+  get2FAConfig,
+  verify2FAPin,
+  logSecurityEvent,
+  touchStoredSession,
+  checkBruteForceCooldown,
+  recordFailedAttempt,
+  resetFailedAttempts,
+} from "./services/authSecurity";
 import { StorageService, hashPassword } from "./services/storage";
 import { GeminiService } from "./services/gemini";
 import { compressImage } from "./services/imageUtils";
@@ -963,6 +981,15 @@ const App: React.FC = () => {
   const [profileConfirmPassword, setProfileConfirmPassword] = useState("");
   const [isSavingProfilePassword, setIsSavingProfilePassword] = useState(false);
 
+  // Estados para Central de Segurança & 2FA
+  const [showSecurityAuditModal, setShowSecurityAuditModal] = useState(false);
+  const [twoFactorPendingUser, setTwoFactorPendingUser] = useState<any | null>(null);
+  const [twoFactorPinInput, setTwoFactorPinInput] = useState("");
+  const [isSubmitting2FA, setIsSubmitting2FA] = useState(false);
+  const [showInactivityWarning, setShowInactivityWarning] = useState(false);
+  const [inactivitySecondsLeft, setInactivitySecondsLeft] = useState<number>(60);
+  const [officialSignedUrl, setOfficialSignedUrl] = useState("");
+
   const [activeTab, setActiveTab] = useState<Tab>(Tab.Dashboard);
   const [financeSubTab, setFinanceSubTab] = useState<
     "paid" | "adjustments" | "sales" | "pending" | "statement"
@@ -1133,11 +1160,73 @@ const App: React.FC = () => {
     [auth.currentUser],
   );
 
-  // Detect public booking mode
-  const barberIdFromUrl = useMemo(() => {
+  // Detect public booking mode from encrypted signed token OR legacy barberId
+  const { barberIdFromUrl, secTokenFromUrl } = useMemo(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get("barberId")?.trim();
+    return {
+      barberIdFromUrl: params.get("barberId")?.trim() || undefined,
+      secTokenFromUrl: params.get("sec_token")?.trim() || undefined,
+    };
   }, []);
+
+  // Generate official signed booking link for profile sharing
+  useEffect(() => {
+    if (effectiveUserId) {
+      generateSignedBookingUrl(effectiveUserId, { expiresInHours: 168 }).then((url) => {
+        setOfficialSignedUrl(url);
+      });
+    }
+  }, [effectiveUserId]);
+
+  // Inactivity auto-logout monitor (15 minutes threshold with 60s countdown warning)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let lastInteraction = Date.now();
+    const handleUserActivity = () => {
+      lastInteraction = Date.now();
+      touchStoredSession();
+      if (showInactivityWarning) {
+        setShowInactivityWarning(false);
+      }
+    };
+
+    const events = ["mousedown", "keydown", "scroll", "touchstart"];
+    events.forEach((ev) => window.addEventListener(ev, handleUserActivity, { passive: true }));
+
+    const checkInterval = setInterval(() => {
+      const idleTime = Date.now() - lastInteraction;
+      const warningThreshold = 14 * 60 * 1000; // 14 mins (60s before lock)
+      const lockThreshold = 15 * 60 * 1000; // 15 mins
+
+      if (idleTime >= lockThreshold) {
+        clearInterval(checkInterval);
+        setShowInactivityWarning(false);
+        logSecurityEvent(
+          "inactivity_timeout",
+          session?.username || "authenticated_user",
+          effectiveUserId,
+          "Sessão encerrada automaticamente por inatividade (15 minutos)",
+          "warning"
+        );
+        handleLogout();
+        showToast("Sessão encerrada por inatividade para proteger sua conta.", "info");
+      } else if (idleTime >= warningThreshold) {
+        const remainingSeconds = Math.max(0, Math.ceil((lockThreshold - idleTime) / 1000));
+        setInactivitySecondsLeft(remainingSeconds);
+        setShowInactivityWarning(true);
+      } else {
+        if (showInactivityWarning) {
+          setShowInactivityWarning(false);
+        }
+      }
+    }, 1000);
+
+    return () => {
+      clearInterval(checkInterval);
+      events.forEach((ev) => window.removeEventListener(ev, handleUserActivity));
+    };
+  }, [isAuthenticated, effectiveUserId, session?.username, showInactivityWarning]);
 
 
 
@@ -4031,6 +4120,46 @@ const App: React.FC = () => {
     }
   };
 
+  const handle2FASubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!twoFactorPendingUser) return;
+    setIsSubmitting2FA(true);
+    setAuthError(null);
+
+    const pin = twoFactorPinInput.trim();
+    if (pin.length !== 6) {
+      setAuthError("O código 2FA deve conter exatamente 6 números.");
+      setIsSubmitting2FA(false);
+      return;
+    }
+
+    try {
+      const isValid = await verify2FAPin(twoFactorPendingUser.uid, pin);
+      if (!isValid) {
+        setAuthError("Código 2FA incorreto. Tente novamente.");
+        setIsSubmitting2FA(false);
+        return;
+      }
+
+      try {
+        if (typeof sessionStorage !== "undefined") {
+          sessionStorage.setItem("system_authenticated", "true");
+        }
+      } catch {}
+
+      setSimulatedUser(twoFactorPendingUser);
+      setIsAuthenticated(true);
+      setTwoFactorPendingUser(null);
+      setTwoFactorPinInput("");
+      showToast("Autenticação em dois fatores confirmada com sucesso!", "success");
+      await logSecurityEvent("login_success", twoFactorPendingUser.email, twoFactorPendingUser.uid, "Login efetuado com 2FA");
+    } catch {
+      setAuthError("Erro ao validar código 2FA.");
+    } finally {
+      setIsSubmitting2FA(false);
+    }
+  };
+
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmittingAuth(true);
@@ -4063,6 +4192,15 @@ const App: React.FC = () => {
 
     setAuthError(null);
     setShowEmailAuthGuide(false);
+
+    const cooldown = checkBruteForceCooldown(email);
+    if (cooldown.isLocked) {
+      setAuthError(
+        `Acesso bloqueado temporariamente por excesso de tentativas. Tente novamente em ${cooldown.remainingSec} segundos.`
+      );
+      setIsSubmittingAuth(false);
+      return;
+    }
 
     try {
       if (authMode === "register") {
@@ -4175,13 +4313,63 @@ const App: React.FC = () => {
           const registeredUsers = JSON.parse(localStorage.getItem("simdb_registered_users") || "{}");
           const existingUser = registeredUsers[email.toLowerCase()];
 
+          const completeSuccessfulLogin = async (
+            targetUid: string,
+            targetEmail: string,
+            targetDisplayName: string,
+          ) => {
+            resetFailedAttempts(email);
+            const twoFactor = get2FAConfig(targetUid);
+            if (twoFactor.enabled) {
+              setTwoFactorPendingUser({
+                uid: targetUid,
+                email: targetEmail,
+                displayName: targetDisplayName,
+              });
+              setIsSubmittingAuth(false);
+              showToast("Código 2FA obrigatório para prosseguir.", "info");
+              return;
+            }
+
+            try {
+              if (typeof sessionStorage !== "undefined") {
+                sessionStorage.setItem("system_authenticated", "true");
+              }
+            } catch {}
+            setSimulatedUser({
+              uid: targetUid,
+              email: targetEmail,
+              displayName: targetDisplayName,
+            });
+            setIsAuthenticated(true);
+            showToast("Bem-vindo de volta!", "success");
+            await logSecurityEvent(
+              "login_success",
+              targetEmail,
+              targetUid,
+              "Acesso autenticado ao sistema",
+            );
+          };
+
+          const handleLoginFailure = async (reason: string = "Senha incorreta") => {
+            const res = recordFailedAttempt(email);
+            await logSecurityEvent("login_failed", email, undefined, reason);
+            if (res.isNowLocked) {
+              setAuthError(
+                `Acesso bloqueado temporariamente por excesso de tentativas. Aguarde ${res.remainingSec} segundos.`,
+              );
+            } else {
+              setAuthError("Usuário ou senha incorretos.");
+            }
+          };
+
           if (existingUser) {
             const hashedInput = await hashPassword(pass);
             const isValid = existingUser.passHash
               ? existingUser.passHash === hashedInput
               : existingUser.pass === pass;
             if (!isValid && !isCustomPasswordMatch) {
-              setAuthError("Senha incorreta.");
+              await handleLoginFailure();
               return;
             }
             // Upgrade legacy plaintext passwords to secure hash
@@ -4191,44 +4379,29 @@ const App: React.FC = () => {
               localStorage.setItem("simdb_registered_users", JSON.stringify(registeredUsers));
             }
             const targetUid = isDefaultUser ? "matheus_farias" : existingUser.uid;
-            try {
-              if (typeof sessionStorage !== "undefined") {
-                sessionStorage.setItem("system_authenticated", "true");
-              }
-            } catch {}
-            setSimulatedUser({
-              uid: targetUid,
-              email: existingUser.email,
-              displayName: existingUser.username || email.split("@")[0],
-            });
-            setIsAuthenticated(true);
-            showToast("Bem-vindo de volta!", "success");
+            await completeSuccessfulLogin(
+              targetUid,
+              existingUser.email,
+              existingUser.username || email.split("@")[0],
+            );
             return;
           }
 
           if (isDefaultUser) {
             if (!isDefaultPassword) {
-              setAuthError("Senha incorreta.");
+              await handleLoginFailure();
               return;
             }
-            const uid = "matheus_farias";
-            try {
-              if (typeof sessionStorage !== "undefined") {
-                sessionStorage.setItem("system_authenticated", "true");
-              }
-            } catch {}
-            setSimulatedUser({
-              uid,
-              email: "matheus@barbershop.com",
-              displayName: "Matheus Farias",
-            });
-            setIsAuthenticated(true);
-            showToast("Acesso estabelecido com sucesso!", "success");
+            await completeSuccessfulLogin(
+              "matheus_farias",
+              "matheus@barbershop.com",
+              "Matheus Farias",
+            );
             return;
           }
 
           // User not found in local registration
-          setAuthError("Usuário ou senha incorretos.");
+          await handleLoginFailure("Usuário não encontrado");
           return;
         }
 
@@ -4841,7 +5014,14 @@ const App: React.FC = () => {
       </div>
     );
 
-  if (barberIdFromUrl) return <PublicBookingView barberIdFromUrl={barberIdFromUrl} />;
+  if (secTokenFromUrl || barberIdFromUrl) {
+    return (
+      <PublicBookingView
+        barberIdFromUrl={barberIdFromUrl}
+        secTokenFromUrl={secTokenFromUrl}
+      />
+    );
+  }
 
   if (!isAuthenticated)
     return (
@@ -4926,7 +5106,56 @@ const App: React.FC = () => {
                 </div>
               )}
 
-              {authMode === "reset" ? (
+              {twoFactorPendingUser ? (
+                <div className="space-y-5">
+                  <div className="flex items-center gap-3 p-3.5 bg-blue-500/10 border border-blue-500/20 rounded-2xl text-left">
+                    <KeyRound className="text-blue-400 shrink-0" size={20} />
+                    <div>
+                      <p className="text-[11px] font-black text-white uppercase tracking-wider">
+                        Autenticação em Dois Fatores (2FA)
+                      </p>
+                      <p className="text-[9px] text-slate-400 font-medium">
+                        Informe o PIN de 6 dígitos configurado para a conta de {twoFactorPendingUser.displayName}.
+                      </p>
+                    </div>
+                  </div>
+
+                  <Input
+                    label="PIN DE SEGURANÇA (6 DÍGITOS)"
+                    type="password"
+                    maxLength={6}
+                    placeholder="000000"
+                    value={twoFactorPinInput}
+                    onChange={(e) => setTwoFactorPinInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    required
+                    className="text-center text-lg tracking-widest font-mono"
+                    autoFocus
+                  />
+
+                  <Button
+                    type="button"
+                    onClick={handle2FASubmit}
+                    isLoading={isSubmitting2FA}
+                    className="w-full py-4 tracking-widest text-xs shadow-xl active:scale-[0.98] transition-transform"
+                  >
+                    VALIDAR PIN E ENTRAR
+                  </Button>
+
+                  <div className="pt-2 border-t border-white/5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTwoFactorPendingUser(null);
+                        setTwoFactorPinInput("");
+                        setAuthError(null);
+                      }}
+                      className="w-full text-[10px] text-slate-400 hover:text-white font-black uppercase tracking-widest transition-all cursor-pointer py-1"
+                    >
+                      CANCELAR E VOLTAR AO LOGIN
+                    </button>
+                  </div>
+                </div>
+              ) : authMode === "reset" ? (
                 <div className="space-y-5">
                   <div className="flex items-center gap-3 p-3.5 bg-elite-red-500/10 border border-elite-red-500/20 rounded-2xl text-left">
                     <Shield className="text-elite-red-500 shrink-0" size={20} />
@@ -5495,6 +5724,14 @@ const App: React.FC = () => {
         clients={clients}
         appointments={appointments}
         services={services}
+        showToast={showToast}
+      />
+
+      {/* Central Avançada de Auditoria de Segurança, Links Criptografados e 2FA */}
+      <SecurityAuditModal
+        isOpen={showSecurityAuditModal}
+        onClose={() => setShowSecurityAuditModal(false)}
+        userId={effectiveUserId}
         showToast={showToast}
       />
 
@@ -6484,6 +6721,14 @@ const App: React.FC = () => {
             >
               <Wrench size={14} className="text-emerald-400" />
               <span className="hidden sm:inline">Reparo</span>
+            </button>
+            <button
+              onClick={() => setShowSecurityAuditModal(true)}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 bg-slate-900 border border-emerald-500/30 hover:border-emerald-500/60 rounded-xl text-emerald-400 hover:text-emerald-300 hover:bg-emerald-500/10 transition-all cursor-pointer text-[10px] font-black uppercase tracking-wider"
+              title="Central de Segurança, Auditoria e Links Criptografados"
+            >
+              <ShieldCheck size={14} className="text-emerald-400" />
+              <span className="hidden sm:inline">Segurança</span>
             </button>
             <button
               onClick={() => setIsPrivacyMode(!isPrivacyMode)}
@@ -10153,20 +10398,30 @@ const App: React.FC = () => {
               </Card>
 
               <Card
-                title="Link de Agendamento Online"
-                icon={<ExternalLink size={16} />}
-                className="border-elite-cyan-500/30"
+                title="Link de Agendamento Criptografado & Seguro"
+                icon={<ShieldCheck size={16} className="text-emerald-400" />}
+                className="border-emerald-500/30"
               >
                 <div className="space-y-4">
+                  <div className="flex items-center justify-between gap-2 p-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl">
+                    <div className="flex items-center gap-2">
+                      <Lock size={14} className="text-emerald-400 shrink-0" />
+                      <span className="text-[10px] font-black uppercase text-emerald-300 tracking-wider">
+                        Proteção Criptográfica HMAC-SHA256 Ativa
+                      </span>
+                    </div>
+                    <Badge variant="success">ISOLAMENTO TOTAL</Badge>
+                  </div>
+
                   <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider leading-relaxed text-center">
-                    Compartilhe este link oficial com seus clientes para que eles agendem pelo celular em poucos toques.
+                    Link com assinatura digital e expiração automática. Clientes acessam apenas a tela de agendamento, sem qualquer visibilidade do painel administrativo.
                   </p>
 
                   <div className="p-3 bg-slate-950 rounded-2xl border border-white/5 space-y-3">
                     <div className="flex items-center gap-2 px-3 py-2 bg-slate-900/80 rounded-xl border border-white/5 overflow-hidden">
-                      <Smartphone size={14} className="text-elite-cyan-400 shrink-0" />
-                      <code className="text-[10px] text-elite-cyan-300 font-mono truncate flex-1 select-all">
-                        {window.location.origin}/?barberId={effectiveUserId}
+                      <Smartphone size={14} className="text-emerald-400 shrink-0" />
+                      <code className="text-[9px] text-emerald-300 font-mono truncate flex-1 select-all">
+                        {officialSignedUrl || `${window.location.origin}/?sec=gerando_token_seguro...`}
                       </code>
                     </div>
 
@@ -10176,9 +10431,9 @@ const App: React.FC = () => {
                         variant="cyan"
                         className="h-10 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5"
                         onClick={() => {
-                          const url = `${window.location.origin}/?barberId=${effectiveUserId}`;
+                          const url = officialSignedUrl || `${window.location.origin}/?barberId=${effectiveUserId}`;
                           navigator.clipboard.writeText(url);
-                          showToast("Link copiado para a área de transferência!");
+                          showToast("Link criptografado copiado com sucesso!");
                         }}
                       >
                         <Copy size={13} /> COPIAR LINK
@@ -10189,9 +10444,9 @@ const App: React.FC = () => {
                         variant="lilac"
                         className="h-10 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 border-none text-white"
                         onClick={() => {
-                          const url = `${window.location.origin}/?barberId=${effectiveUserId}`;
+                          const url = officialSignedUrl || `${window.location.origin}/?barberId=${effectiveUserId}`;
                           const shop = session?.shopName || "Barbearia";
-                          const text = `Olá! 💈 Agende seu horário na ${shop} de forma rápida pelo nosso link exclusivo:\n\n${url}`;
+                          const text = `Olá! 💈 Agende seu horário com total segurança na ${shop} pelo nosso link oficial verificado:\n\n${url}`;
                           window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
                         }}
                       >
@@ -10203,13 +10458,53 @@ const App: React.FC = () => {
                         variant="outline"
                         className="h-10 border-slate-700 hover:border-slate-500 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5"
                         onClick={() => {
-                          const url = `${window.location.origin}/?barberId=${effectiveUserId}`;
+                          const url = officialSignedUrl || `${window.location.origin}/?barberId=${effectiveUserId}`;
                           window.open(url, "_blank");
                         }}
                       >
                         <ExternalLink size={13} /> ABRIR LINK
                       </Button>
                     </div>
+
+                    <div className="pt-2 border-t border-white/5">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        className="w-full h-9 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-2 border border-emerald-500/30 text-emerald-300 hover:bg-emerald-500/10"
+                        onClick={() => setShowSecurityAuditModal(true)}
+                      >
+                        <KeyRound size={13} /> GERAR LINKS TEMPORÁRIOS & USO ÚNICO
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </Card>
+
+              <Card
+                title="Auditoria & Governança de Segurança"
+                icon={<ShieldAlert size={16} className="text-amber-400" />}
+                className="border-amber-500/30"
+              >
+                <div className="space-y-4">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider leading-relaxed">
+                    Monitore acessos suspeitos, configure autenticação em duas etapas (2FA), audite logs de atividades críticas e revogue links com um clique.
+                  </p>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Button
+                      variant="primary"
+                      className="py-3 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2"
+                      onClick={() => setShowSecurityAuditModal(true)}
+                    >
+                      <Activity size={14} /> EXECUTAR VARREDURA & AUDITORIA
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      className="py-3 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-2 border border-slate-700 hover:border-slate-500"
+                      onClick={() => setShowSecurityAuditModal(true)}
+                    >
+                      <ShieldCheck size={14} className="text-emerald-400" /> GERENCIAR 2FA & LOGS
+                    </Button>
                   </div>
                 </div>
               </Card>
@@ -11068,11 +11363,23 @@ const App: React.FC = () => {
 };
 
 interface PublicBookingViewProps {
-  barberIdFromUrl: string;
+  barberIdFromUrl?: string;
+  secTokenFromUrl?: string;
 }
 
-const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }) => {
-  const effectiveBarberId = useMemo(() => getEffectiveBarberId(barberIdFromUrl), [barberIdFromUrl]);
+const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl, secTokenFromUrl }) => {
+  const [tokenValidation, setTokenValidation] = useState<{
+    isValidating: boolean;
+    error: string | null;
+    tokenPayload?: SignedLinkToken;
+  }>({
+    isValidating: !!secTokenFromUrl,
+    error: null,
+  });
+
+  const [resolvedBarberId, setResolvedBarberId] = useState<string>(() => barberIdFromUrl || "matheus_farias");
+
+  const effectiveBarberId = useMemo(() => getEffectiveBarberId(resolvedBarberId), [resolvedBarberId]);
 
   const [clientSession, setClientSession] = useState<{ name: string; phone: string } | null>(() => {
     const savedName = localStorage.getItem("bk_client_name");
@@ -11082,8 +11389,55 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
 
   const [step, setStep] = useState<1 | 2 | 3>(1);
   const [selectedService, setSelectedService] = useState<Service | null>(null);
-  const [bookingDate, setBookingDate] = useState("");
-  const [bookingTime, setBookingTime] = useState("");
+  const [name, setName] = useState(clientSession?.name || "");
+  const [phone, setPhone] = useState(clientSession?.phone || "");
+  const [phoneFilter, setPhoneFilter] = useState(clientSession?.phone || "");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [viewMode, setViewMode] = useState<"booking" | "my-bookings">("booking");
+  const [myRequests, setMyRequests] = useState<any[]>([]);
+
+  useEffect(() => {
+    if (!secTokenFromUrl) {
+      if (barberIdFromUrl) {
+        setResolvedBarberId(barberIdFromUrl);
+      }
+      return;
+    }
+
+    setTokenValidation({ isValidating: true, error: null });
+    verifySignedToken(secTokenFromUrl).then((res) => {
+      if (!res.valid) {
+        setTokenValidation({
+          isValidating: false,
+          error: res.message || "Link inválido, expirado ou adulterado.",
+        });
+        logSecurityEvent(
+          "token_tampered",
+          "anonymous",
+          undefined,
+          `Tentativa de acesso com token inválido: ${res.error || "desconhecido"}`
+        );
+      } else {
+        setTokenValidation({
+          isValidating: false,
+          error: null,
+          tokenPayload: res.payload,
+        });
+        if (res.payload?.barberId) {
+          setResolvedBarberId(res.payload.barberId);
+        }
+        if (res.payload?.clientName) {
+          setName((prev) => prev || res.payload!.clientName!);
+        }
+        logSecurityEvent(
+          "token_verified",
+          "anonymous",
+          res.payload?.barberId,
+          "Token criptografado verificado com sucesso no agendamento"
+        );
+      }
+    });
+  }, [secTokenFromUrl, barberIdFromUrl]);
 
   const [currentMonth, setCurrentMonth] = useState(() => new Date().getMonth());
   const [currentYear, setCurrentYear] = useState(() => new Date().getFullYear());
@@ -11166,12 +11520,8 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
     return [...paddingDays, ...currentDays, ...nextDays];
   }, [currentMonth, currentYear]);
 
-  const [name, setName] = useState(clientSession?.name || "");
-  const [phone, setPhone] = useState(clientSession?.phone || "");
-  const [phoneFilter, setPhoneFilter] = useState(clientSession?.phone || "");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [viewMode, setViewMode] = useState<"booking" | "my-bookings">("booking");
-  const [myRequests, setMyRequests] = useState<any[]>([]);
+  const [bookingDate, setBookingDate] = useState("");
+  const [bookingTime, setBookingTime] = useState("");
 
   const [bookingBarber, setBookingBarber] = useState<any>(() => {
     try {
@@ -11425,8 +11775,10 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
   const handleSubmitRequest = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     
-    const currentName = clientSession ? clientSession.name : name.trim();
-    const currentPhone = clientSession ? clientSession.phone.replace(/\D/g, "") : phone.replace(/\D/g, "");
+    const rawName = clientSession ? clientSession.name : name.trim();
+    const rawPhone = clientSession ? clientSession.phone.replace(/\D/g, "") : phone.replace(/\D/g, "");
+    const currentName = sanitizeInput(rawName);
+    const currentPhone = sanitizeInput(rawPhone);
 
     if (!selectedService || !effectiveBarberId || !bookingDate || !bookingTime) {
       showToast("Por favor, selecione serviço, data e horário.", "error");
@@ -11492,6 +11844,17 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
       }
       setClientSession({ name: currentName, phone: currentPhone });
 
+      // Redeeming single-use token if configured
+      if (tokenValidation.tokenPayload?.singleUse && tokenValidation.tokenPayload.nonce) {
+        redeemSingleUseToken(tokenValidation.tokenPayload.nonce);
+        logSecurityEvent(
+          "token_replayed",
+          currentName,
+          effectiveBarberId,
+          `Token de uso único ${tokenValidation.tokenPayload.nonce} resgatado com sucesso.`
+        );
+      }
+
       setBookingSuccess(true);
     } catch (err) {
       console.error("Booking error:", err);
@@ -11500,6 +11863,46 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl }
       setIsSubmitting(false);
     }
   };
+
+  if (tokenValidation.isValidating) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-slate-100">
+        <div className="animate-pulse flex flex-col items-center gap-3">
+          <Shield className="h-12 w-12 text-elite-cyan-400" />
+          <p className="text-elite-cyan-400 font-black tracking-widest text-xs uppercase">
+            Validando Assinatura do Link...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (tokenValidation.error) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 text-slate-100">
+        <div className="max-w-md w-full bg-slate-900 border border-red-500/30 rounded-3xl p-6 sm:p-8 text-center space-y-5 shadow-2xl animate-in zoom-in-95 duration-300">
+          <div className="h-16 w-16 bg-red-500/10 border border-red-500/20 rounded-full flex items-center justify-center mx-auto text-red-500">
+            <ShieldAlert size={36} />
+          </div>
+          <div className="space-y-2">
+            <h2 className="text-xl font-black text-white uppercase tracking-tight">
+              Acesso ao Agendamento Bloqueado
+            </h2>
+            <p className="text-slate-300 text-xs leading-relaxed">
+              {tokenValidation.error}
+            </p>
+          </div>
+          <div className="p-3.5 bg-red-500/10 border border-red-500/20 rounded-2xl text-[11px] text-red-300 font-bold leading-relaxed text-left space-y-1.5">
+            <p>• <strong>Validação de Integridade:</strong> Reprovada</p>
+            <p>• <strong>Proteção contra Manipulação:</strong> Ativa (HMAC-SHA256)</p>
+            <p className="text-[10px] text-slate-400 mt-1">
+              Por motivos de segurança, links expirados ou adulterados são automaticamente bloqueados. Solicite um novo link válido diretamente à barbearia.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (bookingSuccess) {
     return (

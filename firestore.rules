@@ -293,6 +293,13 @@ service cloud.firestore {
         allow update: if isValidId(notificationId) && isAuthorizedBarber(userId) && isValidNotification(incoming());
         allow delete: if isValidId(notificationId) && isAuthorizedBarber(userId);
       }
+
+      // Security Audit Logs
+      match /security_logs/{logId} {
+        allow get, list: if isAuthorizedBarber(userId);
+        allow create: if isValidId(logId);
+        allow update, delete: if isHardcodedAdmin();
+      }
     }
   }
 }
