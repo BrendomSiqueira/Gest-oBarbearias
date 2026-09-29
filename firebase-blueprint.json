@@ -166,6 +166,21 @@
       "properties": {
         "status": { "type": "string" }
       }
+    },
+    "SystemAccount": {
+      "title": "SystemAccount",
+      "description": "Secure persistent record of registered accounts and credentials backup.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "username": { "type": "string" },
+        "email": { "type": "string" },
+        "passHash": { "type": "string" },
+        "shopName": { "type": "string" },
+        "phone": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["uid", "username", "email", "passHash"]
     }
   },
   "firestore": {
@@ -216,6 +231,10 @@
     "/users/{userId}/notifications/{notificationId}": {
       "schema": "Notification",
       "description": "Notifications for a user."
+    },
+    "/system_accounts/{accountKey}": {
+      "schema": "SystemAccount",
+      "description": "Secure persistent registry of system accounts and credentials."
     }
   }
 }

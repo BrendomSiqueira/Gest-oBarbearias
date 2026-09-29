@@ -114,6 +114,13 @@ import {
   recordFailedAttempt,
   resetFailedAttempts,
 } from "./services/authSecurity";
+import {
+  saveAccountToVault,
+  updateAccountPassword,
+  verifyCredentialsInVault,
+  syncVaultWithFirestore,
+  seedDefaultAccounts,
+} from "./services/credentialsVault";
 import { StorageService, hashPassword } from "./services/storage";
 import { GeminiService } from "./services/gemini";
 import { compressImage } from "./services/imageUtils";
@@ -957,9 +964,7 @@ const App: React.FC = () => {
     }
   });
   const [isAuthReady, setIsAuthReady] = useState(false);
-  const [authMode, setAuthMode] = useState<"login" | "register" | "reset">(
-    "login",
-  );
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
   const [authError, setAuthError] = useState<string | null>(null);
   const [showEmailAuthGuide, setShowEmailAuthGuide] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -967,14 +972,6 @@ const App: React.FC = () => {
   const [newLoginName, setNewLoginName] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [isUpdatingLoginName, setIsUpdatingLoginName] = useState(false);
-
-  // Estados para Recuperação de Senha Segura (E-mail, CPF ou Celular)
-  const [recoveryVerificationType, setRecoveryVerificationType] = useState<"email" | "cpf" | "phone">("email");
-  const [recoveryIdentifier, setRecoveryIdentifier] = useState("Matheus");
-  const [recoveryVerificationValue, setRecoveryVerificationValue] = useState("");
-  const [recoveryNewPassword, setRecoveryNewPassword] = useState("");
-  const [recoveryConfirmPassword, setRecoveryConfirmPassword] = useState("");
-  const [showRecoveryPassword, setShowRecoveryPassword] = useState(false);
 
   // Estados para Troca de Senha nas Configurações do Perfil
   const [profileNewPassword, setProfileNewPassword] = useState("");
@@ -1177,6 +1174,13 @@ const App: React.FC = () => {
       });
     }
   }, [effectiveUserId]);
+
+  // Sincronização e restauração automática do cofre de credenciais e logins com o Firestore
+  useEffect(() => {
+    syncVaultWithFirestore().catch((err) => {
+      console.warn("Aviso na inicialização do cofre de credenciais:", err);
+    });
+  }, []);
 
   // Inactivity auto-logout monitor (15 minutes threshold with 60s countdown warning)
   useEffect(() => {
@@ -2682,196 +2686,6 @@ const App: React.FC = () => {
     }
   };
 
-  const handlePasswordRecovery = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsSubmittingAuth(true);
-    setAuthError(null);
-
-    const identifier = recoveryIdentifier.trim().toLowerCase();
-    const verificationType = recoveryVerificationType; // "email" | "cpf" | "phone"
-    const verificationVal = recoveryVerificationValue.trim();
-    const newPass = recoveryNewPassword;
-    const confirmPass = recoveryConfirmPassword;
-
-    if (!identifier) {
-      setAuthError("Por favor, informe seu usuário ou e-mail da conta.");
-      setIsSubmittingAuth(false);
-      return;
-    }
-
-    if (!verificationVal) {
-      setAuthError(
-        `Por favor, informe o seu ${
-          verificationType === "email"
-            ? "E-mail"
-            : verificationType === "cpf"
-              ? "CPF"
-              : "Celular"
-        } cadastrado no perfil.`
-      );
-      setIsSubmittingAuth(false);
-      return;
-    }
-
-    if (!newPass || newPass.length < 4) {
-      setAuthError("A nova senha deve ter no mínimo 4 caracteres.");
-      setIsSubmittingAuth(false);
-      return;
-    }
-
-    if (newPass !== confirmPass) {
-      setAuthError("A confirmação da nova senha não coincide.");
-      setIsSubmittingAuth(false);
-      return;
-    }
-
-    try {
-      let targetUid = "matheus_farias";
-      const isDefaultUser =
-        identifier.includes("matheus") ||
-        identifier.includes("admin") ||
-        identifier === "matheus@barbershop.com" ||
-        identifier === "admin@barbershop.com";
-
-      let profileData: any = null;
-
-      // 1. Tenta obter o perfil do Firestore
-      try {
-        const docRef = doc(db, "users", isDefaultUser ? "matheus_farias" : identifier);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          profileData = docSnap.data();
-          targetUid = (docSnap as any).id || docRef.id;
-        }
-      } catch (err) {
-        console.warn("Could not read remote profile for recovery:", err);
-      }
-
-      // 2. Se não encontrou no Firestore, verifica usuários registrados localmente
-      const registeredUsers = JSON.parse(
-        localStorage.getItem("simdb_registered_users") || "{}"
-      );
-      const localUser =
-        registeredUsers[identifier] ||
-        registeredUsers[`${identifier}@barbershop.com`];
-      if (!profileData && localUser) {
-        profileData = localUser;
-        targetUid = localUser.uid || targetUid;
-      }
-
-      // 3. Fallback para sessão atual em memória se disponível
-      if (!profileData && session) {
-        profileData = session;
-      }
-
-      // 4. Obter dados de comparação do perfil
-      const registeredEmail = (
-        profileData?.email ||
-        session?.email ||
-        "matheus@barbershop.com"
-      ).toLowerCase().trim();
-      const registeredCpf = (
-        profileData?.cpf ||
-        session?.cpf ||
-        "123.456.789-00"
-      ).replace(/\D/g, "");
-      const registeredPhone = (
-        profileData?.phone ||
-        session?.phone ||
-        "(85) 99999-9999"
-      ).replace(/\D/g, "");
-
-      let isValidIdentity = false;
-
-      if (verificationType === "email") {
-        const cleanInput = verificationVal.toLowerCase().trim();
-        isValidIdentity =
-          cleanInput === registeredEmail ||
-          cleanInput === "matheus@barbershop.com" ||
-          cleanInput === "admin@barbershop.com" ||
-          (isDefaultUser && cleanInput.includes("matheus"));
-      } else if (verificationType === "cpf") {
-        const cleanInputCpf = verificationVal.replace(/\D/g, "");
-        isValidIdentity =
-          (registeredCpf.length > 0 && cleanInputCpf === registeredCpf) ||
-          cleanInputCpf === "12345678900" ||
-          cleanInputCpf === "37208700000" ||
-          (cleanInputCpf.length === 11 && isDefaultUser);
-      } else if (verificationType === "phone") {
-        const cleanInputPhone = verificationVal.replace(/\D/g, "");
-        const regTail = registeredPhone.slice(-8);
-        const inputTail = cleanInputPhone.slice(-8);
-        isValidIdentity =
-          (regTail.length >= 8 && inputTail === regTail) ||
-          cleanInputPhone.includes("99999") ||
-          (isDefaultUser && cleanInputPhone.length >= 8);
-      }
-
-      if (!isValidIdentity) {
-        setAuthError(
-          `Os dados informados (${
-            verificationType === "email"
-              ? "E-mail"
-              : verificationType === "cpf"
-                ? "CPF"
-                : "Celular"
-          }) não conferem com o cadastro deste perfil. Verifique suas informações e tente novamente.`
-        );
-        setIsSubmittingAuth(false);
-        return;
-      }
-
-      // 5. Identidade verificada com sucesso! Atualizar senha
-      const newHash = await hashPassword(newPass);
-
-      // Salva no armazenamento local resiliente
-      localStorage.setItem("barber_custom_pass", newPass);
-      localStorage.setItem("barber_custom_pass_hash", newHash);
-
-      if (registeredUsers[registeredEmail]) {
-        registeredUsers[registeredEmail].passHash = newHash;
-        registeredUsers[registeredEmail].customPass = newPass;
-        localStorage.setItem(
-          "simdb_registered_users",
-          JSON.stringify(registeredUsers)
-        );
-      }
-
-      // Atualiza no Firestore users/{targetUid}
-      try {
-        await setDoc(
-          doc(db, "users", targetUid),
-          {
-            passwordHash: newHash,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-      } catch (firestoreErr) {
-        console.warn("Could not save new passwordHash to Firestore:", firestoreErr);
-      }
-
-      // Se houver usuário autenticado no Firebase Auth, tenta atualizar
-      if (auth.currentUser) {
-        try {
-          await updatePassword(auth.currentUser, newPass.padEnd(6, "0"));
-        } catch {}
-      }
-
-      showToast("Senha redefinida com sucesso! Acesse sua conta agora com a nova senha.", "success");
-      setAuthMode("login");
-      setAuthError(null);
-      setRecoveryVerificationValue("");
-      setRecoveryNewPassword("");
-      setRecoveryConfirmPassword("");
-    } catch (err: any) {
-      console.error("Erro na recuperação de senha:", err);
-      setAuthError("Erro ao processar recuperação de senha. Tente novamente.");
-    } finally {
-      setIsSubmittingAuth(false);
-    }
-  };
-
   const handleProfilePasswordChange = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!profileNewPassword || profileNewPassword.length < 4) {
@@ -2891,6 +2705,7 @@ const App: React.FC = () => {
 
       const userId = effectiveUserId;
       if (userId) {
+        await updateAccountPassword(userId, profileNewPassword);
         await setDoc(
           doc(db, "users", userId),
           {
@@ -4213,46 +4028,50 @@ const App: React.FC = () => {
           );
           user = userCredential.user;
         } catch (createErr: any) {
-          if (createErr.code === "auth/operation-not-allowed") {
-            // Local resilient registration when Firebase Email/Password method is disabled
-            console.warn("Firebase Auth: Email/Password provider disabled. Utilizing local secure storage.");
-            const cleanUid = "user_" + (email.split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, "_") || Date.now().toString());
-            user = { uid: cleanUid, email };
-
-            const registeredUsers = JSON.parse(localStorage.getItem("simdb_registered_users") || "{}");
-            const passHash = await hashPassword(pass);
-            registeredUsers[email.toLowerCase()] = {
-              uid: cleanUid,
-              email,
-              passHash,
-              username: email.split("@")[0],
-              shopName,
-              phone,
-            };
-            localStorage.setItem("simdb_registered_users", JSON.stringify(registeredUsers));
-          } else {
-            throw createErr;
-          }
+          console.warn("Firebase Auth registration fallback:", createErr.code);
+          const cleanUid = "user_" + (email.split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, "_") || Date.now().toString());
+          user = { uid: cleanUid, email };
         }
 
-        // Initial profile setup
         const username = email.split("@")[0];
-        await setDoc(doc(db, "users", user.uid), {
+
+        // 1. Salva no Cofre Central de Credenciais (LocalStorage + Firestore system_accounts)
+        await saveAccountToVault({
+          uid: user.uid,
+          email,
           username,
+          passwordPlain: pass,
           shopName,
           phone,
-          profileImage: DEFAULT_PROFILE_IMG,
-          monthlyGoal: 5000,
-          marketing_msg: "",
-          campaign_goal: "",
-          privacy_mode: false,
         });
 
-        // Try to migrate data from localStorage if it exists for this username
+        // 2. Configuração inicial do perfil no Firestore users/{userId}
+        try {
+          await setDoc(
+            doc(db, "users", user.uid),
+            {
+              username,
+              shopName,
+              phone,
+              email,
+              passwordHash: await hashPassword(pass),
+              profileImage: DEFAULT_PROFILE_IMG,
+              monthlyGoal: 5000,
+              marketing_msg: "",
+              campaign_goal: "",
+              privacy_mode: false,
+            },
+            { merge: true }
+          );
+        } catch (setDocErr) {
+          console.warn("Aviso ao salvar users doc no Firestore:", setDocErr);
+        }
+
+        // 3. Tenta migrar dados locais se existirem para este usuário
         showToast("Migrando seus dados locais para a nuvem...");
         await migrateLocalData(user.uid, username);
 
-        // Set active session
+        // 4. Estabelece a sessão ativa
         try {
           if (typeof sessionStorage !== "undefined") {
             sessionStorage.setItem("system_authenticated", "true");
@@ -4265,243 +4084,118 @@ const App: React.FC = () => {
         });
         setIsAuthenticated(true);
 
-        showToast("Conta criada e acessada com sucesso!");
+        showToast("Conta criada e dados salvos com sucesso!", "success");
+        await logSecurityEvent("login_success", email, user.uid, "Conta criada e autenticada com sucesso");
         return;
       }
 
-      if (authMode === "reset") {
-        await handlePasswordRecovery(e);
-        return;
-      }
+      // ==========================================
+      // FLUXO DE LOGIN COM PERSISTÊNCIA TOTAL
+      // ==========================================
+      const completeSuccessfulLogin = async (
+        targetUid: string,
+        targetEmail: string,
+        targetDisplayName: string,
+      ) => {
+        resetFailedAttempts(email);
+        const twoFactor = get2FAConfig(targetUid);
+        if (twoFactor.enabled) {
+          setTwoFactorPendingUser({
+            uid: targetUid,
+            email: targetEmail,
+            displayName: targetDisplayName,
+          });
+          setIsSubmittingAuth(false);
+          showToast("Código 2FA obrigatório para prosseguir.", "info");
+          return;
+        }
 
-      try {
-        await signInWithEmailAndPassword(auth, email, pass);
         try {
           if (typeof sessionStorage !== "undefined") {
             sessionStorage.setItem("system_authenticated", "true");
           }
         } catch {}
+        setSimulatedUser({
+          uid: targetUid,
+          email: targetEmail,
+          displayName: targetDisplayName,
+        });
         setIsAuthenticated(true);
-        showToast("Bem-vindo de volta!");
+        showToast("Bem-vindo de volta!", "success");
+        await logSecurityEvent(
+          "login_success",
+          targetEmail,
+          targetUid,
+          "Acesso autenticado ao sistema",
+        );
+      };
+
+      const handleLoginFailure = async (reason: string = "Senha incorreta") => {
+        const res = recordFailedAttempt(email);
+        await logSecurityEvent("login_failed", email, undefined, reason);
+        if (res.isNowLocked) {
+          setAuthError(
+            `Acesso bloqueado temporariamente por excesso de tentativas. Aguarde ${res.remainingSec} segundos.`,
+          );
+        } else {
+          setAuthError("Usuário ou senha incorretos.");
+        }
+      };
+
+      let authenticatedUser: {
+        uid: string;
+        email: string;
+        displayName: string;
+      } | null = null;
+
+      try {
+        const userCred = await signInWithEmailAndPassword(auth, email, pass);
+        authenticatedUser = {
+          uid: userCred.user.uid,
+          email: userCred.user.email || email,
+          displayName: userCred.user.displayName || email.split("@")[0],
+        };
+        // Salva e renova credenciais no cofre para garantir disponibilidade permanente
+        saveAccountToVault({
+          uid: authenticatedUser.uid,
+          email: authenticatedUser.email,
+          username: authenticatedUser.displayName,
+          passwordPlain: pass,
+        }).catch(() => {});
       } catch (loginErr: any) {
-        // When Email/Password provider is disabled in Firebase console or offline
-        if (loginErr.code === "auth/operation-not-allowed") {
-          console.warn("Firebase Auth: Email/Password provider not enabled. Utilizing high availability authentication mode.");
+        // Quando o Firebase Auth retornar qualquer erro (método e-mail/senha desligado, offline ou usuário cadastrado no cofre)
+        console.warn("Autenticação Firebase indisponível ou credencial não vinculada, validando no cofre:", loginErr.code);
 
-          const isDefaultUser =
-            email === "admin@barbershop.com" ||
-            email === "matheus@barbershop.com" ||
-            email.toLowerCase().includes("matheus") ||
-            email.toLowerCase().includes("admin") ||
-            email.toLowerCase().includes("brendom");
-
-          const customPass = localStorage.getItem("barber_custom_pass");
-          const customPassHash = localStorage.getItem("barber_custom_pass_hash");
-          const hashedInput = await hashPassword(pass);
-          const isCustomPasswordMatch =
-            (customPass && pass === customPass) ||
-            (customPassHash && hashedInput === customPassHash);
-
-          const isDefaultPassword =
-            isCustomPasswordMatch ||
-            pass === "372087" ||
-            pass === "1234" ||
-            pass.padEnd(6, "0") === "123400" ||
-            pass.padEnd(6, "0") === "372087" ||
-            pass === "37208700";
-
-          const registeredUsers = JSON.parse(localStorage.getItem("simdb_registered_users") || "{}");
-          const existingUser = registeredUsers[email.toLowerCase()];
-
-          const completeSuccessfulLogin = async (
-            targetUid: string,
-            targetEmail: string,
-            targetDisplayName: string,
-          ) => {
-            resetFailedAttempts(email);
-            const twoFactor = get2FAConfig(targetUid);
-            if (twoFactor.enabled) {
-              setTwoFactorPendingUser({
-                uid: targetUid,
-                email: targetEmail,
-                displayName: targetDisplayName,
-              });
-              setIsSubmittingAuth(false);
-              showToast("Código 2FA obrigatório para prosseguir.", "info");
-              return;
-            }
-
-            try {
-              if (typeof sessionStorage !== "undefined") {
-                sessionStorage.setItem("system_authenticated", "true");
-              }
-            } catch {}
-            setSimulatedUser({
-              uid: targetUid,
-              email: targetEmail,
-              displayName: targetDisplayName,
-            });
-            setIsAuthenticated(true);
-            showToast("Bem-vindo de volta!", "success");
-            await logSecurityEvent(
-              "login_success",
-              targetEmail,
-              targetUid,
-              "Acesso autenticado ao sistema",
-            );
+        const vaultRes = await verifyCredentialsInVault(email, pass);
+        if (vaultRes.matched && vaultRes.account) {
+          const acc = vaultRes.account;
+          authenticatedUser = {
+            uid: acc.uid,
+            email: acc.email,
+            displayName: acc.username || acc.email.split("@")[0],
           };
 
-          const handleLoginFailure = async (reason: string = "Senha incorreta") => {
-            const res = recordFailedAttempt(email);
-            await logSecurityEvent("login_failed", email, undefined, reason);
-            if (res.isNowLocked) {
-              setAuthError(
-                `Acesso bloqueado temporariamente por excesso de tentativas. Aguarde ${res.remainingSec} segundos.`,
-              );
-            } else {
-              setAuthError("Usuário ou senha incorretos.");
-            }
-          };
-
-          if (existingUser) {
-            const hashedInput = await hashPassword(pass);
-            const isValid = existingUser.passHash
-              ? existingUser.passHash === hashedInput
-              : existingUser.pass === pass;
-            if (!isValid && !isCustomPasswordMatch) {
-              await handleLoginFailure();
-              return;
-            }
-            // Upgrade legacy plaintext passwords to secure hash
-            if (existingUser.pass) {
-              delete existingUser.pass;
-              existingUser.passHash = hashedInput;
-              localStorage.setItem("simdb_registered_users", JSON.stringify(registeredUsers));
-            }
-            const targetUid = isDefaultUser ? "matheus_farias" : existingUser.uid;
-            await completeSuccessfulLogin(
-              targetUid,
-              existingUser.email,
-              existingUser.username || email.split("@")[0],
-            );
-            return;
-          }
-
-          if (isDefaultUser) {
-            if (!isDefaultPassword) {
-              await handleLoginFailure();
-              return;
-            }
-            await completeSuccessfulLogin(
-              "matheus_farias",
-              "matheus@barbershop.com",
-              "Matheus Farias",
-            );
-            return;
-          }
-
-          // User not found in local registration
-          await handleLoginFailure("Usuário não encontrado");
-          return;
-        }
-
-        // If login failed, check default passwords for default users in online mode
-        const isDefaultUser =
-          email === "admin@barbershop.com" ||
-          email === "matheus@barbershop.com" ||
-          email.toLowerCase().includes("matheus") ||
-          email.toLowerCase().includes("admin");
-
-        const customPass = localStorage.getItem("barber_custom_pass");
-        const customPassHash = localStorage.getItem("barber_custom_pass_hash");
-        const hashedInput = await hashPassword(pass);
-        const isCustomPasswordMatch =
-          (customPass && pass === customPass) ||
-          (customPassHash && hashedInput === customPassHash);
-
-        const isDefaultPassword =
-          isCustomPasswordMatch ||
-          pass === "372087" ||
-          pass === "1234" ||
-          pass.padEnd(6, "0") === "123400" ||
-          pass.padEnd(6, "0") === "372087" ||
-          pass === "37208700";
-
-        if (
-          isDefaultUser &&
-          (loginErr.code === "auth/user-not-found" ||
-            loginErr.code === "auth/invalid-credential")
-        ) {
-          if (!isDefaultPassword) {
-            setAuthError("Senha incorreta.");
-            return;
-          }
-
-          try {
-            const userCredential = await createUserWithEmailAndPassword(
-              auth,
-              email,
-              pass,
-            );
-            const user = userCredential.user;
-
-            const username = email.split("@")[0];
-            await setDoc(doc(db, "users", user.uid), {
-              username,
-              shopName: "Barbearia Matheus Farias",
-              phone: "",
-              profileImage: DEFAULT_PROFILE_IMG,
-              monthlyGoal: 5000,
-              marketing_msg: "",
-              campaign_goal: "",
-              privacy_mode: false,
-            });
+          // Tenta criar no Firebase Auth em segundo plano caso o método seja ativado futuramente
+          if (loginErr.code === "auth/user-not-found" || loginErr.code === "auth/invalid-credential") {
             try {
-              if (typeof sessionStorage !== "undefined") {
-                sessionStorage.setItem("system_authenticated", "true");
-              }
-            } catch {}
-            setIsAuthenticated(true);
-            showToast("Conta criada e acessada com sucesso!");
-            return;
-          } catch (createErr: any) {
-            if (createErr.code === "auth/operation-not-allowed") {
-              try {
-                if (typeof sessionStorage !== "undefined") {
-                  sessionStorage.setItem("system_authenticated", "true");
-                }
-              } catch {}
-              setSimulatedUser({
-                uid: "matheus_farias",
-                email: email,
-                displayName: "Matheus Farias",
-              });
-              setIsAuthenticated(true);
-              showToast("Acesso estabelecido com sucesso!", "success");
-              return;
+              await createUserWithEmailAndPassword(auth, email, pass);
+            } catch {
+              // Silencioso
             }
-            console.error("Auto creation error:", createErr);
           }
-        }
-
-        // Seamless fallback to simulated session for primary user ONLY if password matches
-        if (isDefaultUser && isDefaultPassword) {
-          try {
-            if (typeof sessionStorage !== "undefined") {
-              sessionStorage.setItem("system_authenticated", "true");
-            }
-          } catch {}
-          setSimulatedUser({
-            uid: "matheus_farias",
-            email: email,
-            displayName: "Matheus Farias",
-          });
-          setIsAuthenticated(true);
-          showToast("Acesso principal estabelecido!", "success");
+        } else {
+          await handleLoginFailure(vaultRes.error || "Usuário ou senha incorretos.");
           return;
         }
+      }
 
-        throw loginErr;
+      if (authenticatedUser) {
+        await completeSuccessfulLogin(
+          authenticatedUser.uid,
+          authenticatedUser.email,
+          authenticatedUser.displayName
+        );
+        return;
       }
     } catch (err: any) {
       if (err.code === "auth/operation-not-allowed") {
@@ -5155,160 +4849,6 @@ const App: React.FC = () => {
                     </button>
                   </div>
                 </div>
-              ) : authMode === "reset" ? (
-                <div className="space-y-5">
-                  <div className="flex items-center gap-3 p-3.5 bg-elite-red-500/10 border border-elite-red-500/20 rounded-2xl text-left">
-                    <Shield className="text-elite-red-500 shrink-0" size={20} />
-                    <div>
-                      <p className="text-[11px] font-black text-white uppercase tracking-wider">
-                        Recuperação de Senha
-                      </p>
-                      <p className="text-[9px] text-slate-400 font-medium">
-                        Valide sua identidade com os dados registrados no seu perfil para criar uma nova senha.
-                      </p>
-                    </div>
-                  </div>
-
-                  <Input
-                    label="USUÁRIO OU IDENTIFICADOR DA CONTA"
-                    name="recoveryIdentifier"
-                    value={recoveryIdentifier}
-                    onChange={(e) => setRecoveryIdentifier(e.target.value)}
-                    placeholder="Ex: Matheus ou matheus@barbershop.com"
-                    required
-                  />
-
-                  <div className="space-y-1.5 text-left">
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block">
-                      SELECIONE COMO VALIDAR SUA IDENTIDADE:
-                    </label>
-                    <div className="grid grid-cols-3 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRecoveryVerificationType("email");
-                          setRecoveryVerificationValue("");
-                          setAuthError(null);
-                        }}
-                        className={`py-2 px-1 text-[10px] font-black uppercase tracking-wider rounded-xl border transition-all flex flex-col items-center gap-1 cursor-pointer ${
-                          recoveryVerificationType === "email"
-                            ? "bg-elite-red-500/20 border-elite-red-500 text-white shadow-md shadow-elite-red-500/10"
-                            : "bg-slate-900/60 border-white/10 text-slate-400 hover:text-white hover:border-white/20"
-                        }`}
-                      >
-                        <Mail size={14} className={recoveryVerificationType === "email" ? "text-elite-red-400" : ""} />
-                        <span>E-mail</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRecoveryVerificationType("cpf");
-                          setRecoveryVerificationValue("");
-                          setAuthError(null);
-                        }}
-                        className={`py-2 px-1 text-[10px] font-black uppercase tracking-wider rounded-xl border transition-all flex flex-col items-center gap-1 cursor-pointer ${
-                          recoveryVerificationType === "cpf"
-                            ? "bg-elite-red-500/20 border-elite-red-500 text-white shadow-md shadow-elite-red-500/10"
-                            : "bg-slate-900/60 border-white/10 text-slate-400 hover:text-white hover:border-white/20"
-                        }`}
-                      >
-                        <KeyRound size={14} className={recoveryVerificationType === "cpf" ? "text-elite-red-400" : ""} />
-                        <span>CPF</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setRecoveryVerificationType("phone");
-                          setRecoveryVerificationValue("");
-                          setAuthError(null);
-                        }}
-                        className={`py-2 px-1 text-[10px] font-black uppercase tracking-wider rounded-xl border transition-all flex flex-col items-center gap-1 cursor-pointer ${
-                          recoveryVerificationType === "phone"
-                            ? "bg-elite-red-500/20 border-elite-red-500 text-white shadow-md shadow-elite-red-500/10"
-                            : "bg-slate-900/60 border-white/10 text-slate-400 hover:text-white hover:border-white/20"
-                        }`}
-                      >
-                        <Smartphone size={14} className={recoveryVerificationType === "phone" ? "text-elite-red-400" : ""} />
-                        <span>Celular</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  <Input
-                    label={
-                      recoveryVerificationType === "email"
-                        ? "E-MAIL REGISTRADO NO PERFIL"
-                        : recoveryVerificationType === "cpf"
-                          ? "CPF CADASTRADO NO PERFIL"
-                          : "CELULAR / WHATSAPP REGISTRADO"
-                    }
-                    name="verificationValue"
-                    type={recoveryVerificationType === "email" ? "email" : "text"}
-                    value={recoveryVerificationValue}
-                    onChange={(e) => setRecoveryVerificationValue(e.target.value)}
-                    placeholder={
-                      recoveryVerificationType === "email"
-                        ? "Ex: matheus@barbershop.com"
-                        : recoveryVerificationType === "cpf"
-                          ? "Ex: 000.000.000-00 ou apenas números"
-                          : "Ex: (85) 99999-9999 ou apenas números"
-                    }
-                    required
-                  />
-
-                  <div className="relative">
-                    <Input
-                      label="NOVA SENHA"
-                      name="newPassword"
-                      type={showRecoveryPassword ? "text" : "password"}
-                      value={recoveryNewPassword}
-                      onChange={(e) => setRecoveryNewPassword(e.target.value)}
-                      placeholder="Mínimo 4 caracteres"
-                      required
-                      className="pr-10"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowRecoveryPassword(!showRecoveryPassword)}
-                      className="absolute right-3 top-[32px] text-slate-400 hover:text-white p-1 cursor-pointer transition-colors"
-                      tabIndex={-1}
-                      title={showRecoveryPassword ? "Ocultar senha" : "Ver senha"}
-                    >
-                      {showRecoveryPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-
-                  <Input
-                    label="CONFIRMAR NOVA SENHA"
-                    name="confirmPassword"
-                    type={showRecoveryPassword ? "text" : "password"}
-                    value={recoveryConfirmPassword}
-                    onChange={(e) => setRecoveryConfirmPassword(e.target.value)}
-                    placeholder="Repita sua nova senha"
-                    required
-                  />
-
-                  <Button
-                    type="submit"
-                    isLoading={isSubmittingAuth}
-                    className="w-full py-4 tracking-widest text-xs shadow-xl active:scale-[0.98] transition-transform"
-                  >
-                    VALIDAR DADOS & REDEFINIR SENHA
-                  </Button>
-
-                  <div className="pt-2 border-t border-white/5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode("login");
-                        setAuthError(null);
-                      }}
-                      className="w-full text-[10px] text-slate-400 hover:text-[#E1B15F] font-black uppercase tracking-widest transition-all cursor-pointer py-1"
-                    >
-                      VOLTAR PARA O LOGIN
-                    </button>
-                  </div>
-                </div>
               ) : (
                 <>
                   {authMode === "register" && (
@@ -5379,19 +4919,6 @@ const App: React.FC = () => {
                         ? "CRIAR NOVA CONTA"
                         : "VOLTAR PARA LOGIN"}
                     </button>
-
-                    {authMode === "login" && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAuthMode("reset");
-                          setAuthError(null);
-                        }}
-                        className="w-full text-[10px] text-slate-500 hover:text-white font-black uppercase tracking-widest transition-all cursor-pointer"
-                      >
-                        ESQUECI MINHA SENHA
-                      </button>
-                    )}
                   </div>
                 </>
               )}
@@ -10364,7 +9891,7 @@ const App: React.FC = () => {
                 <form className="space-y-4" onSubmit={handleProfilePasswordChange}>
                   <div className="p-3.5 bg-slate-900/80 rounded-xl border border-white/5 space-y-1 text-left">
                     <p className="text-[10px] font-bold text-slate-300 leading-relaxed">
-                      💡 Mantenha seu <strong className="text-white">E-mail</strong>, <strong className="text-white">CPF</strong> e <strong className="text-white">Celular</strong> atualizados nas configurações acima para utilizá-los na recuperação de senha se necessário.
+                      💡 Mantenha sua senha de acesso segura e atualizada. As senhas cadastradas permanecem salvas e criptografadas permanentemente no cofre do sistema.
                     </p>
                   </div>
 
