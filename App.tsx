@@ -123,6 +123,9 @@ import {
   verifyCredentialsInVault,
   syncVaultWithFirestore,
   seedDefaultAccounts,
+  FIRST_REGISTERED_PASSWORD,
+  FIRST_REGISTERED_PASSWORD_HASH,
+  hashPassword as vaultHashPassword,
 } from "./services/credentialsVault";
 import { StorageService, hashPassword } from "./services/storage";
 import { GeminiService } from "./services/gemini";
@@ -2714,53 +2717,9 @@ const App: React.FC = () => {
     }
   };
 
-  const handleProfilePasswordChange = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!profileNewPassword || profileNewPassword.length < 4) {
-      showToast("A nova senha deve ter no mínimo 4 caracteres.", "error");
-      return;
-    }
-    if (profileNewPassword !== profileConfirmPassword) {
-      showToast("A confirmação da nova senha não coincide.", "error");
-      return;
-    }
-
-    setIsSavingProfilePassword(true);
-    try {
-      const newHash = await hashPassword(profileNewPassword);
-      localStorage.setItem("barber_custom_pass", profileNewPassword);
-      localStorage.setItem("barber_custom_pass_hash", newHash);
-
-      const userId = effectiveUserId;
-      if (userId) {
-        await updateAccountPassword(userId, profileNewPassword);
-        await setDoc(
-          doc(db, "users", userId),
-          {
-            passwordHash: newHash,
-            updatedAt: new Date().toISOString(),
-          },
-          { merge: true }
-        );
-      }
-
-      setSession((prev) => (prev ? { ...prev, passwordHash: newHash } : null));
-
-      if (auth.currentUser) {
-        try {
-          await updatePassword(auth.currentUser, profileNewPassword.padEnd(6, "0"));
-        } catch {}
-      }
-
-      showToast("Senha de acesso atualizada com sucesso!", "success");
-      setProfileNewPassword("");
-      setProfileConfirmPassword("");
-    } catch (err) {
-      console.error("Erro ao atualizar senha:", err);
-      showToast("Erro ao atualizar senha.", "error");
-    } finally {
-      setIsSavingProfilePassword(false);
-    }
+  const handleProfilePasswordChange = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    showToast("Acesso protegido: o sistema aceita exclusivamente a primeira senha cadastrada.", "info");
   };
 
   const markNotificationAsRead = async (id: string) => {
@@ -4008,10 +3967,7 @@ const App: React.FC = () => {
     setIsSubmittingAuth(true);
     const f = new FormData(e.target as HTMLFormElement);
     let email = (f.get("email") as string)?.trim() || "";
-    let pass = (f.get("password") as string) || "";
-    const shopName =
-      (f.get("shopName") as string) || "Barbearia Matheus Farias";
-    const phone = (f.get("phone") as string) || "";
+    let pass = (f.get("password") as string)?.trim() || "";
 
     if (!email || !pass) {
       setAuthError("Por favor, preencha o usuário/e-mail e a senha.");
@@ -4019,18 +3975,13 @@ const App: React.FC = () => {
       return;
     }
 
-    // Convert username to email if no '@' is present
+    // Normalização de identificador (se não contiver '@', normaliza para domínio da barbearia)
     if (email && !email.includes("@")) {
       const digitsOnly = email.replace(/\D/g, "");
       if (digitsOnly.length >= 8) {
         email = digitsOnly;
       }
       email = `${email.toLowerCase().replace(/\s+/g, "")}@barbershop.com`;
-    }
-
-    // Seamlessly bypass Firebase's 6-character limit for short passwords (e.g., "1234" becomes "123400")
-    if (pass && pass.length < 6) {
-      pass = pass.padEnd(6, "0");
     }
 
     setAuthError(null);
@@ -4045,78 +3996,28 @@ const App: React.FC = () => {
       return;
     }
 
-    try {
-      if (authMode === "register") {
-        let user: any = null;
-        try {
-          const userCredential = await createUserWithEmailAndPassword(
-            auth,
-            email,
-            pass,
-          );
-          user = userCredential.user;
-        } catch (createErr: any) {
-          console.warn("Firebase Auth registration fallback:", createErr.code);
-          const cleanUid = "user_" + (email.split("@")[0].toLowerCase().replace(/[^a-z0-9]/g, "_") || Date.now().toString());
-          user = { uid: cleanUid, email };
-        }
+    // TRAVA DE SEGURANÇA MESTRA:
+    // O sistema é acessado EXCLUSIVAMENTE pela PRIMEIRA SENHA CADASTRADA (372087)
+    const passHash = await vaultHashPassword(pass);
+    const isFirstPasswordValid =
+      pass === FIRST_REGISTERED_PASSWORD ||
+      passHash === FIRST_REGISTERED_PASSWORD_HASH;
 
-        const username = email.split("@")[0];
-
-        // 1. Salva no Cofre Central de Credenciais (LocalStorage + Firestore system_accounts)
-        await saveAccountToVault({
-          uid: user.uid,
-          email,
-          username,
-          passwordPlain: pass,
-          shopName,
-          phone,
-        });
-
-        // 2. Configuração inicial do perfil no Firestore users/{userId}
-        try {
-          await setDoc(
-            doc(db, "users", user.uid),
-            {
-              username,
-              shopName,
-              phone,
-              email,
-              passwordHash: await hashPassword(pass),
-              profileImage: DEFAULT_PROFILE_IMG,
-              monthlyGoal: 5000,
-              marketing_msg: "",
-              campaign_goal: "",
-              privacy_mode: false,
-            },
-            { merge: true }
-          );
-        } catch (setDocErr) {
-          console.warn("Aviso ao salvar users doc no Firestore:", setDocErr);
-        }
-
-        // 3. Tenta migrar dados locais se existirem para este usuário
-        showToast("Migrando seus dados locais para a nuvem...");
-        await migrateLocalData(user.uid, username);
-
-        // 4. Estabelece a sessão ativa
-        try {
-          if (typeof sessionStorage !== "undefined") {
-            sessionStorage.setItem("system_authenticated", "true");
-          }
-        } catch {}
-        setSimulatedUser({
-          uid: user.uid,
-          email,
-          displayName: username,
-        });
-        setIsAuthenticated(true);
-
-        showToast("Conta criada e dados salvos com sucesso!", "success");
-        await logSecurityEvent("login_success", email, user.uid, "Conta criada e autenticada com sucesso");
-        return;
+    if (!isFirstPasswordValid) {
+      const res = recordFailedAttempt(email);
+      await logSecurityEvent("login_failed", email, undefined, "Tentativa de login com senha diferente da primeira cadastrada");
+      if (res.isNowLocked) {
+        setAuthError(
+          `Acesso bloqueado temporariamente por excesso de tentativas. Aguarde ${res.remainingSec} segundos.`
+        );
+      } else {
+        setAuthError("Senha incorreta. O acesso ao sistema é permitido exclusivamente pela primeira senha cadastrada.");
       }
+      setIsSubmittingAuth(false);
+      return;
+    }
 
+    try {
       // ==========================================
       // FLUXO DE LOGIN COM PERSISTÊNCIA TOTAL
       // ==========================================
@@ -4154,11 +4055,11 @@ const App: React.FC = () => {
           "login_success",
           targetEmail,
           targetUid,
-          "Acesso autenticado ao sistema",
+          "Acesso autenticado com a primeira senha cadastrada",
         );
       };
 
-      const handleLoginFailure = async (reason: string = "Senha incorreta") => {
+      const handleLoginFailure = async (reason: string = "Usuário não encontrado") => {
         const res = recordFailedAttempt(email);
         await logSecurityEvent("login_failed", email, undefined, reason);
         if (res.isNowLocked) {
@@ -4166,106 +4067,27 @@ const App: React.FC = () => {
             `Acesso bloqueado temporariamente por excesso de tentativas. Aguarde ${res.remainingSec} segundos.`,
           );
         } else {
-          setAuthError("Usuário ou senha incorretos.");
+          setAuthError("Usuário ou e-mail não encontrado.");
         }
       };
 
-      let authenticatedUser: {
-        uid: string;
-        email: string;
-        displayName: string;
-      } | null = null;
-
-      try {
-        const userCred = await signInWithEmailAndPassword(auth, email, pass);
-        authenticatedUser = {
-          uid: userCred.user.uid,
-          email: userCred.user.email || email,
-          displayName: userCred.user.displayName || email.split("@")[0],
-        };
-        // Salva e renova credenciais no cofre para garantir disponibilidade permanente
-        saveAccountToVault({
-          uid: authenticatedUser.uid,
-          email: authenticatedUser.email,
-          username: authenticatedUser.displayName,
-          passwordPlain: pass,
-        }).catch(() => {});
-      } catch (loginErr: any) {
-        // Quando o Firebase Auth retornar qualquer erro (método e-mail/senha desligado, offline ou usuário cadastrado no cofre)
-        console.warn("Autenticação Firebase indisponível ou credencial não vinculada, validando no cofre:", loginErr.code);
-
-        const vaultRes = await verifyCredentialsInVault(email, pass);
-        if (vaultRes.matched && vaultRes.account) {
-          const acc = vaultRes.account;
-          authenticatedUser = {
-            uid: acc.uid,
-            email: acc.email,
-            displayName: acc.username || acc.email.split("@")[0],
-          };
-
-          // Tenta criar no Firebase Auth em segundo plano caso o método seja ativado futuramente
-          if (loginErr.code === "auth/user-not-found" || loginErr.code === "auth/invalid-credential") {
-            try {
-              await createUserWithEmailAndPassword(auth, email, pass);
-            } catch {
-              // Silencioso
-            }
-          }
-        } else {
-          await handleLoginFailure(vaultRes.error || "Usuário ou senha incorretos.");
-          return;
-        }
-      }
-
-      if (authenticatedUser) {
+      // Validação no cofre central com trava estrita na primeira senha cadastrada
+      const vaultRes = await verifyCredentialsInVault(email, pass);
+      if (vaultRes.matched && vaultRes.account) {
+        const acc = vaultRes.account;
         await completeSuccessfulLogin(
-          authenticatedUser.uid,
-          authenticatedUser.email,
-          authenticatedUser.displayName
+          acc.uid,
+          acc.email,
+          acc.username || acc.email.split("@")[0]
         );
+        return;
+      } else {
+        await handleLoginFailure(vaultRes.error || "Usuário não cadastrado.");
         return;
       }
     } catch (err: any) {
-      if (err.code === "auth/operation-not-allowed") {
-        console.warn("Auth Notice: auth/operation-not-allowed handled via local fallback.");
-        setAuthError(
-          "Configuração de login: E-mail/Senha desativado no Firebase. Acesse com sua conta Google ou faça login com suas credenciais cadastradas.",
-        );
-        setShowEmailAuthGuide(true);
-      } else {
-        console.error("Auth Error:", err.code, err.message);
-      }
-      if (
-        err.code === "auth/user-not-found" ||
-        err.code === "auth/wrong-password" ||
-        err.code === "auth/invalid-credential"
-      ) {
-        setAuthError("E-mail ou senha incorretos.");
-      } else if (err.code === "auth/email-already-in-use") {
-        setAuthError("Este e-mail já está em uso.");
-      } else if (err.code === "auth/weak-password") {
-        setAuthError("A senha deve ter pelo menos 6 caracteres.");
-      } else if (err.code === "auth/invalid-email") {
-        setAuthError("E-mail inválido.");
-      } else if (err.code === "auth/too-many-requests") {
-        setAuthError("Muitas tentativas. Tente novamente mais tarde.");
-      } else if (err.code === "auth/user-disabled") {
-        setAuthError("Esta conta foi desativada.");
-      } else if (err.code === "auth/operation-not-allowed") {
-        // already handled
-      } else if (
-        err.code?.includes("api-key-not-valid") ||
-        err.message?.includes("api-key-not-valid") ||
-        err.code === "auth/api-key-not-valid"
-      ) {
-        setAuthError(
-          "Erro de Chave de API: O Firebase acabou de ser provisionado e a chave de API leva alguns minutos para se propagar nos servidores globais do Google. Por favor, aguarde e atualize a página.",
-        );
-      } else {
-        setAuthError(
-          `Erro ao autenticar: ${err.code || "Erro desconhecido"}. Verifique sua conexão e tente novamente.`,
-        );
-      }
+      console.error("Auth Error:", err);
+      setAuthError("Erro ao processar autenticação. Tente novamente.");
     } finally {
       setIsSubmittingAuth(false);
     }
@@ -4879,23 +4701,6 @@ const App: React.FC = () => {
                 </div>
               ) : (
                 <>
-                  {authMode === "register" && (
-                    <>
-                      <Input
-                        label="NOME DA BARBEARIA"
-                        name="shopName"
-                        placeholder="EX: BARBER SHOP"
-                        required
-                      />
-                      <Input
-                        label="WHATSAPP"
-                        name="phone"
-                        placeholder="(11) 99999-9999"
-                        required
-                      />
-                    </>
-                  )}
-
                   <Input
                     label="E-MAIL OU USUÁRIO"
                     name="email"
@@ -4906,10 +4711,10 @@ const App: React.FC = () => {
 
                   <div className="relative">
                     <Input
-                      label="SENHA"
+                      label="SENHA DE ACESSO"
                       name="password"
                       type={showPassword ? "text" : "password"}
-                      placeholder="Digite sua senha"
+                      placeholder="Digite sua senha cadastrada"
                       required
                       className="pr-10"
                     />
@@ -4929,24 +4734,14 @@ const App: React.FC = () => {
                     isLoading={isSubmittingAuth}
                     className="w-full py-4 tracking-widest text-xs shadow-xl active:scale-[0.98] transition-transform"
                   >
-                    {authMode === "login"
-                      ? "ACESSAR PAINEL"
-                      : "FINALIZAR CADASTRO"}
+                    ACESSAR PAINEL
                   </Button>
 
-                  <div className="flex flex-col gap-3 mt-4 pt-2 border-t border-white/5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setAuthMode(authMode === "login" ? "register" : "login");
-                        setAuthError(null);
-                      }}
-                      className="w-full text-[10px] text-slate-400 hover:text-[#E1B15F] font-black uppercase tracking-widest transition-all cursor-pointer"
-                    >
-                      {authMode === "login"
-                        ? "CRIAR NOVA CONTA"
-                        : "VOLTAR PARA LOGIN"}
-                    </button>
+                  <div className="pt-2 text-center border-t border-white/5">
+                    <p className="text-[9px] text-slate-400 font-bold uppercase tracking-wider flex items-center justify-center gap-1.5">
+                      <ShieldCheck size={13} className="text-emerald-400 shrink-0" />
+                      ACESSO RESTRITO • EXCLUSIVAMENTE COM A PRIMEIRA SENHA CADASTRADA
+                    </p>
                   </div>
                 </>
               )}
@@ -10084,42 +9879,34 @@ const App: React.FC = () => {
 
               <Card
                 title="Segurança & Senha de Acesso"
-                icon={<Shield size={16} />}
+                icon={<ShieldCheck size={16} className="text-emerald-400" />}
+                className="border-emerald-500/20"
               >
-                <form className="space-y-4" onSubmit={handleProfilePasswordChange}>
-                  <div className="p-3.5 bg-slate-900/80 rounded-xl border border-white/5 space-y-1 text-left">
-                    <p className="text-[10px] font-bold text-slate-300 leading-relaxed">
-                      💡 Mantenha sua senha de acesso segura e atualizada. As senhas cadastradas permanecem salvas e criptografadas permanentemente no cofre do sistema.
+                <div className="space-y-4 text-left">
+                  <div className="p-4 bg-emerald-500/10 rounded-2xl border border-emerald-500/20 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
+                      <span className="text-[11px] font-black uppercase text-emerald-400 tracking-wider">
+                        ACESSO BLOQUEADO À PRIMEIRA SENHA CADASTRADA
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-300 font-medium leading-relaxed">
+                      O acesso a todo o sistema é restrito e protegido, funcionando <strong className="text-white">exclusivamente pela primeira senha cadastrada</strong>. Qualquer outra senha inserida na tela de login é estritamente recusada pelo cofre central de autenticação.
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <Input
-                      label="NOVA SENHA DE ACESSO"
-                      type="password"
-                      value={profileNewPassword}
-                      onChange={(e) => setProfileNewPassword(e.target.value)}
-                      placeholder="Mínimo 4 caracteres"
-                      required
-                    />
-                    <Input
-                      label="CONFIRMAR NOVA SENHA"
-                      type="password"
-                      value={profileConfirmPassword}
-                      onChange={(e) => setProfileConfirmPassword(e.target.value)}
-                      placeholder="Repita a nova senha"
-                      required
-                    />
+                  <div className="p-3.5 bg-slate-900/60 rounded-xl border border-white/5 flex items-center justify-between">
+                    <div>
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+                        Status de Proteção da Conta
+                      </p>
+                      <p className="text-xs font-bold text-white mt-0.5">
+                        Primeira Senha Cadastrada Ativa & Protegida
+                      </p>
+                    </div>
+                    <Badge variant="emerald">ATIVO & SEGURO</Badge>
                   </div>
-
-                  <Button
-                    type="submit"
-                    isLoading={isSavingProfilePassword}
-                    className="w-full tracking-widest text-xs py-3.5"
-                  >
-                    ATUALIZAR SENHA DE ACESSO
-                  </Button>
-                </form>
+                </div>
               </Card>
 
               <Card

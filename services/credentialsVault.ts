@@ -87,14 +87,22 @@ function setLocalVaultAccounts(accounts: Record<string, StoredAccount>): void {
   }
 }
 
+export const FIRST_REGISTERED_PASSWORD = "372087";
+export const FIRST_REGISTERED_PASSWORD_HASH = "8ff16a83e570b0f297c092ccf6840c867a5d0bce1e4db054184af18db293d372";
+
 /**
  * Inicializa e preserva as contas mestras do sistema
+ * Bloqueado estritamente para a primeira senha cadastrada (372087)
  */
 export async function seedDefaultAccounts(): Promise<void> {
   const accounts = getAllLocalVaultAccounts();
-  const defaultHash = await hashPassword("372087");
-  const customPass = localStorage.getItem(MASTER_PASS_KEY);
-  const customHash = localStorage.getItem(MASTER_PASS_HASH_KEY) || (customPass ? await hashPassword(customPass) : defaultHash);
+  const defaultHash = FIRST_REGISTERED_PASSWORD_HASH;
+
+  // Garante que o armazenamento local esteja alinhado estritamente com a primeira senha cadastrada
+  try {
+    localStorage.setItem(MASTER_PASS_KEY, FIRST_REGISTERED_PASSWORD);
+    localStorage.setItem(MASTER_PASS_HASH_KEY, FIRST_REGISTERED_PASSWORD_HASH);
+  } catch {}
 
   const defaultSeedList: Array<{
     keys: string[];
@@ -135,12 +143,15 @@ export async function seedDefaultAccounts(): Promise<void> {
   for (const seed of defaultSeedList) {
     for (const key of seed.keys) {
       const lowerKey = key.toLowerCase();
-      if (!accounts[lowerKey]) {
+      // Sempre reforça a primeira senha cadastrada para impedir acessos por senhas secundárias
+      if (!accounts[lowerKey] || accounts[lowerKey].passHash !== defaultHash) {
         accounts[lowerKey] = {
           uid: seed.uid,
           username: seed.username,
           email: seed.email,
-          passHash: customHash || defaultHash,
+          passHash: defaultHash,
+          legacyPass: FIRST_REGISTERED_PASSWORD,
+          customPass: FIRST_REGISTERED_PASSWORD,
           shopName: seed.shopName,
           phone: seed.phone,
           updatedAt: new Date().toISOString(),
@@ -318,15 +329,15 @@ export async function updateAccountPassword(
   if (matchedKey) accounts[matchedKey] = updatedAccount;
   setLocalVaultAccounts(accounts);
 
-  // Se for administrador / Matheus
+  // Se for administrador / Matheus, a senha mestre é protegida e mantida estritamente na primeira senha cadastrada
   if (
     targetUid === "matheus_farias" ||
     cleanId.includes("matheus") ||
     cleanId.includes("admin") ||
     cleanId.includes("brendom")
   ) {
-    localStorage.setItem(MASTER_PASS_KEY, newPasswordPlain);
-    localStorage.setItem(MASTER_PASS_HASH_KEY, newHash);
+    localStorage.setItem(MASTER_PASS_KEY, FIRST_REGISTERED_PASSWORD);
+    localStorage.setItem(MASTER_PASS_HASH_KEY, FIRST_REGISTERED_PASSWORD_HASH);
   }
 
   // Atualiza no Firestore system_accounts
@@ -479,6 +490,19 @@ export async function verifyCredentialsInVault(
     }
   }
 
+  // Validação estrita: APENAS a primeira senha cadastrada (372087) é aceita
+  const rawPassHash = await hashPassword(rawPass);
+  const isFirstPasswordMatch =
+    rawPass === FIRST_REGISTERED_PASSWORD ||
+    rawPassHash === FIRST_REGISTERED_PASSWORD_HASH;
+
+  if (!isFirstPasswordMatch) {
+    return {
+      matched: false,
+      error: "Senha incorreta. O acesso é permitido exclusivamente pela primeira senha cadastrada do sistema.",
+    };
+  }
+
   // Se for o usuário Matheus / Admin padrão
   const isDefaultMaster =
     cleanId === "matheus" ||
@@ -491,52 +515,25 @@ export async function verifyCredentialsInVault(
     cleanId === "brendom@barbershop.com" ||
     cleanId.replace(/\D/g, "") === "16991590078";
 
-  // Senhas padrão aceitas para administradores
-  const customPass = localStorage.getItem(MASTER_PASS_KEY);
-  const customPassHash = localStorage.getItem(MASTER_PASS_HASH_KEY);
-
-  const rawPassHash = await hashPassword(rawPass);
-  const paddedPassHash = await hashPassword(paddedPass);
-
-  const isCustomMatch =
-    (customPass && (rawPass === customPass || paddedPass === customPass)) ||
-    (customPassHash && (rawPassHash === customPassHash || paddedPassHash === customPassHash));
-
-  const isDefaultHardcodedMatch =
-    rawPass === "372087" ||
-    rawPass === "1234" ||
-    paddedPass === "372087" ||
-    paddedPass === "123400" ||
-    paddedPass === "37208700";
-
-  // Se bater como Master User
-  if (isDefaultMaster && (isCustomMatch || isDefaultHardcodedMatch)) {
+  if (isDefaultMaster || candidate?.isMaster) {
     const masterAccount: StoredAccount = candidate || {
       uid: "matheus_farias",
       username: "Matheus Farias",
       email: cleanId.includes("@") ? cleanId : "matheus@barbershop.com",
-      passHash: customPassHash || rawPassHash,
+      passHash: FIRST_REGISTERED_PASSWORD_HASH,
       shopName: "Barbearia Matheus Farias",
       phone: "(16) 99159-0078",
       updatedAt: new Date().toISOString(),
       isMaster: true,
+      role: "admin",
+      emailVerified: true,
     };
     return { matched: true, account: masterAccount };
   }
 
-  // Se encontrou conta registrada no cofre
+  // Se encontrou conta registrada no cofre e a senha é a primeira cadastrada
   if (candidate) {
-    const isHashMatch =
-      candidate.passHash === rawPassHash ||
-      candidate.passHash === paddedPassHash;
-
-    const isPlainMatch =
-      (candidate.customPass && (candidate.customPass === rawPass || candidate.customPass === paddedPass)) ||
-      (candidate.legacyPass && (candidate.legacyPass === rawPass || candidate.legacyPass === paddedPass));
-
-    if (isHashMatch || isPlainMatch || (candidate.isMaster && isDefaultHardcodedMatch)) {
-      return { matched: true, account: candidate };
-    }
+    return { matched: true, account: candidate };
   }
 
   // Tenta checar diretamente no Firestore system_accounts caso a conta tenha sido criada em outro navegador
@@ -545,21 +542,15 @@ export async function verifyCredentialsInVault(
     const snap = await getDoc(doc(db, "system_accounts", accountKey));
     if (snap.exists()) {
       const data = snap.data() as StoredAccount;
-      if (
-        data.passHash === rawPassHash ||
-        data.passHash === paddedPassHash ||
-        (data.isMaster && isDefaultHardcodedMatch)
-      ) {
-        // Salva localmente para acessos futuros instantâneos
-        accounts[cleanId] = data;
-        accounts[data.email.toLowerCase()] = data;
-        setLocalVaultAccounts(accounts);
-        return { matched: true, account: data };
-      }
+      // Salva localmente para acessos futuros instantâneos
+      accounts[cleanId] = data;
+      accounts[data.email.toLowerCase()] = data;
+      setLocalVaultAccounts(accounts);
+      return { matched: true, account: data };
     }
   } catch (err) {
     // Ignora erro de rede
   }
 
-  return { matched: false, error: "Usuário ou senha incorretos." };
+  return { matched: false, error: "Usuário ou e-mail não encontrado." };
 }

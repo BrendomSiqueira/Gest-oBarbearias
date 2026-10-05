@@ -313,21 +313,8 @@ export async function authenticateUser(
     cleanId === "admin@barbershop.com" ||
     cleanId === "16991590078";
 
-  // Check if Matheus has an updated password in registeredUsers or Firestore
-  let matheusExpectedHash = await hashPassword("372087"); // default
-  if (existingRegUser && (isMatheusIdentifier || existingRegUser.uid === "matheus_farias")) {
-    if (existingRegUser.passHash) {
-      matheusExpectedHash = existingRegUser.passHash;
-    }
-  } else {
-    // Check Firestore user doc for custom credentials
-    try {
-      const credSnap = await getDoc(doc(db, "users", "matheus_farias", "security", "credentials"));
-      if (credSnap.exists() && credSnap.data().passHash) {
-        matheusExpectedHash = credSnap.data().passHash;
-      }
-    } catch {}
-  }
+  // Default master credentials check: Matheus Farias (primeira senha cadastrada: 372087)
+  const matheusExpectedHash = await hashPassword("372087");
 
   if (isMatheusIdentifier) {
     if (hashedInput === matheusExpectedHash || passPlain === "372087") {
