@@ -24,6 +24,7 @@ import {
   Receipt,
   MessageSquare,
   KeyRound,
+  QrCode,
   Smartphone,
   ShieldCheck,
   Shield,
@@ -98,6 +99,8 @@ import { SystemRepairModal } from "./components/SystemRepairModal";
 import { DuplicateClientsModal } from "./components/DuplicateClientsModal";
 import { FinancialReportsAudit } from "./components/FinancialReportsAudit";
 import { SecurityAuditModal } from "./components/SecurityAuditModal";
+import { PixPaymentModal } from "./components/PixPaymentModal";
+import { PixKeyType, formatPixKeyDisplay, validatePixKey } from "./services/pixService";
 import {
   generateSignedBookingUrl,
   verifySignedToken,
@@ -987,6 +990,11 @@ const App: React.FC = () => {
   const [inactivitySecondsLeft, setInactivitySecondsLeft] = useState<number>(60);
   const [officialSignedUrl, setOfficialSignedUrl] = useState("");
 
+  // Estados para Gestão de Chaves PIX e Cobrança Instantânea
+  const [pixModalApt, setPixModalApt] = useState<Appointment | null>(null);
+  const [isPixPaymentModalOpen, setIsPixPaymentModalOpen] = useState(false);
+  const [isTestingPix, setIsTestingPix] = useState(false);
+
   const [activeTab, setActiveTab] = useState<Tab>(Tab.Dashboard);
   const [financeSubTab, setFinanceSubTab] = useState<
     "paid" | "adjustments" | "sales" | "pending" | "statement"
@@ -1339,6 +1347,11 @@ const App: React.FC = () => {
       marketing_msg: marketingMsg || "",
       campaign_goal: campaignGoal || "",
       privacy_mode: !!isPrivacyMode,
+      pixKey: session.pixKey || "",
+      pixKeyType: session.pixKeyType || "phone",
+      pixBeneficiary: session.pixBeneficiary || session.shopName || "",
+      pixCity: session.pixCity || "FORTALEZA",
+      pixBank: session.pixBank || "",
     };
 
     const fingerprint = JSON.stringify(currentProfilePayload);
@@ -1379,6 +1392,11 @@ const App: React.FC = () => {
     session?.monthlyGoal,
     session?.businessHours,
     session?.unavailableSlots,
+    session?.pixKey,
+    session?.pixKeyType,
+    session?.pixBeneficiary,
+    session?.pixCity,
+    session?.pixBank,
     marketingMsg,
     campaignGoal,
     isPrivacyMode,
@@ -1412,6 +1430,11 @@ const App: React.FC = () => {
             marketing_msg: data.marketing_msg || "",
             campaign_goal: data.campaign_goal || "",
             privacy_mode: !!data.privacy_mode,
+            pixKey: data.pixKey || "",
+            pixKeyType: data.pixKeyType || "phone",
+            pixBeneficiary: data.pixBeneficiary || "",
+            pixCity: data.pixCity || "FORTALEZA",
+            pixBank: data.pixBank || "",
           });
           lastSavedProfileRef.current = incomingFingerprint;
 
@@ -1426,6 +1449,11 @@ const App: React.FC = () => {
             monthlyGoal: data.monthlyGoal,
             businessHours: data.businessHours || undefined,
             unavailableSlots: data.unavailableSlots || [],
+            pixKey: data.pixKey || "",
+            pixKeyType: data.pixKeyType || "phone",
+            pixBeneficiary: data.pixBeneficiary || "",
+            pixCity: data.pixCity || "FORTALEZA",
+            pixBank: data.pixBank || "",
           });
           setMarketingMsg(data.marketing_msg || "");
           setCampaignGoal(data.campaign_goal || "");
@@ -5262,6 +5290,33 @@ const App: React.FC = () => {
         showToast={showToast}
       />
 
+      {/* Modal Oficial de Pagamento Instantâneo via PIX */}
+      <PixPaymentModal
+        isOpen={isPixPaymentModalOpen}
+        onClose={() => {
+          setIsPixPaymentModalOpen(false);
+          setPixModalApt(null);
+        }}
+        pixKey={session?.pixKey || ""}
+        pixKeyType={session?.pixKeyType || "phone"}
+        beneficiaryName={session?.pixBeneficiary || session?.shopName || "Barbearia Matheus Farias"}
+        city={session?.pixCity || "FORTALEZA"}
+        bankName={session?.pixBank}
+        amount={
+          pixModalApt
+            ? (pixModalApt.finalPrice > 0
+                ? pixModalApt.finalPrice
+                : (services.find((s) => s.id === pixModalApt.serviceId)?.price || 0))
+            : undefined
+        }
+        description={
+          pixModalApt
+            ? `Atendimento: ${services.find((s) => s.id === pixModalApt.serviceId)?.name || "Barbearia"}`
+            : `Barbearia: ${session?.shopName || "Atendimento"}`
+        }
+        txId={pixModalApt ? `APT${pixModalApt.id.slice(-6)}` : undefined}
+      />
+
       {/* Modal de Limpeza e Exclusão de Contatos Duplicados */}
       <DuplicateClientsModal
         isOpen={showDuplicateClientsModal}
@@ -9031,10 +9086,25 @@ const App: React.FC = () => {
                                     </div>
                                   </div>
                                 </div>
-                                <div className="flex items-center justify-between sm:justify-end gap-4 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
-                                  <span className="text-lg sm:text-xl font-black text-amber-400 italic font-mono">
+                                <div className="flex items-center justify-between sm:justify-end gap-2.5 w-full sm:w-auto pt-2 sm:pt-0 border-t sm:border-t-0 border-white/5">
+                                  <span className="text-lg sm:text-xl font-black text-amber-400 italic font-mono mr-1">
                                     {formatCurrency(priceToLiquidate)}
                                   </span>
+                                  {session?.pixKey && (
+                                    <Button
+                                      variant="cyan"
+                                      size="sm"
+                                      className="text-[9px] font-black uppercase tracking-wider flex items-center gap-1 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/30"
+                                      onClick={() => {
+                                        setPixModalApt({ ...apt, finalPrice: priceToLiquidate });
+                                        setIsPixPaymentModalOpen(true);
+                                      }}
+                                      title="Gerar QR Code PIX para esta fatura"
+                                    >
+                                      <QrCode size={13} />
+                                      PIX
+                                    </Button>
+                                  )}
                                   <Button
                                     variant="success"
                                     size="sm"
@@ -9837,7 +9907,7 @@ const App: React.FC = () => {
                       }}
                     />
                     <Input
-                      label="WHATSAPP / CELULAR DE CONTATO (RECUPERAÇÃO DE CONTA)"
+                      label="WHATSAPP / CELULAR DE CONTATO"
                       value={session?.phone}
                       placeholder="(85) 99999-9999"
                       onChange={(e) => {
@@ -9846,7 +9916,7 @@ const App: React.FC = () => {
                       }}
                     />
                     <Input
-                      label="E-MAIL REGISTRADO (RECUPERAÇÃO DE CONTA)"
+                      label="E-MAIL REGISTRADO"
                       value={session?.email || "matheus@barbershop.com"}
                       type="email"
                       placeholder="ex: matheus@barbershop.com"
@@ -9856,7 +9926,7 @@ const App: React.FC = () => {
                       }}
                     />
                     <Input
-                      label="CPF DO RESPONSÁVEL (RECUPERAÇÃO DE CONTA)"
+                      label="CPF DO RESPONSÁVEL"
                       value={session?.cpf || ""}
                       placeholder="000.000.000-00"
                       onChange={(e) => {
@@ -9881,6 +9951,134 @@ const App: React.FC = () => {
                       As informações acima são salvas automaticamente e protegem sua conta.
                     </p>
                   </div>
+                </div>
+              </Card>
+
+              {/* Card de Configuração das Chaves PIX da Barbearia */}
+              <Card
+                title="Chaves PIX da Barbearia (Recebimentos Instantâneos)"
+                icon={<QrCode size={16} className="text-emerald-400" />}
+                className="border-emerald-500/20"
+              >
+                <div className="space-y-6 text-left">
+                  <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl space-y-1">
+                    <div className="flex items-center gap-2">
+                      <ShieldCheck size={16} className="text-emerald-400" />
+                      <span className="text-xs font-black uppercase text-emerald-300 tracking-wider">
+                        Recebimento Direto via Banco Central / PIX
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-300 leading-relaxed">
+                      Configure a chave PIX da barbearia. Ela será utilizada para gerar QR Codes e códigos Copia e Cola para os clientes pagarem os atendimentos na hora ou no agendamento online.
+                    </p>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">
+                        TIPO DE CHAVE PIX
+                      </label>
+                      <select
+                        value={session?.pixKeyType || "phone"}
+                        onChange={(e) => {
+                          const val = e.target.value as PixKeyType;
+                          setSession((s) => (s ? { ...s, pixKeyType: val } : null));
+                        }}
+                        className="w-full bg-slate-950/60 border border-white/10 rounded-2xl px-4 py-3 text-xs font-black text-white uppercase focus:border-emerald-500 outline-none transition-all"
+                      >
+                        <option value="phone">Telefone / Celular</option>
+                        <option value="cpf">CPF</option>
+                        <option value="cnpj">CNPJ</option>
+                        <option value="email">E-mail</option>
+                        <option value="random">Chave Aleatória (EVP)</option>
+                      </select>
+                    </div>
+
+                    <Input
+                      label="CHAVE PIX"
+                      value={session?.pixKey || ""}
+                      placeholder={
+                        session?.pixKeyType === "cpf"
+                          ? "000.000.000-00"
+                          : session?.pixKeyType === "cnpj"
+                          ? "00.000.000/0000-00"
+                          : session?.pixKeyType === "email"
+                          ? "barbearia@exemplo.com"
+                          : session?.pixKeyType === "random"
+                          ? "123e4567-e89b-12d3-a456-426614174000"
+                          : "(85) 99999-9999"
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSession((s) => (s ? { ...s, pixKey: val } : null));
+                      }}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <Input
+                      label="NOME DO BENEFICIÁRIO (TITULAR)"
+                      value={session?.pixBeneficiary || session?.shopName || ""}
+                      placeholder="Ex: Matheus Farias"
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSession((s) => (s ? { ...s, pixBeneficiary: val } : null));
+                      }}
+                    />
+
+                    <Input
+                      label="BANCO / INSTITUIÇÃO"
+                      value={session?.pixBank || ""}
+                      placeholder="Ex: Nubank, Itaú, Inter"
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSession((s) => (s ? { ...s, pixBank: val } : null));
+                      }}
+                    />
+
+                    <Input
+                      label="CIDADE DO BENEFICIÁRIO"
+                      value={session?.pixCity || "FORTALEZA"}
+                      placeholder="Ex: Fortaleza"
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setSession((s) => (s ? { ...s, pixCity: val } : null));
+                      }}
+                    />
+                  </div>
+
+                  {session?.pixKey && (
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-4 bg-slate-950/80 rounded-2xl border border-white/5">
+                      <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                          <QrCode size={18} />
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-400 uppercase font-black block">
+                            Chave Configurada ({session.pixKeyType?.toUpperCase()}):
+                          </span>
+                          <span className="text-xs font-mono font-bold text-emerald-300">
+                            {formatPixKeyDisplay(session.pixKey, session.pixKeyType || "phone")}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-2 w-full sm:w-auto">
+                        <Button
+                          variant="cyan"
+                          size="sm"
+                          className="text-[10px] font-black uppercase tracking-wider"
+                          onClick={() => {
+                            setPixModalApt(null);
+                            setIsPixPaymentModalOpen(true);
+                          }}
+                        >
+                          <QrCode size={13} className="mr-1" />
+                          VER QR CODE & TESTAR
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </Card>
 
@@ -11065,6 +11263,7 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl, 
   const [appointmentRequests, setAppointmentRequests] = useState<any[]>([]);
   const [bookingSuccess, setBookingSuccess] = useState(false);
   const [bookingError, setBookingError] = useState<string | null>(null);
+  const [showClientPixModal, setShowClientPixModal] = useState(false);
   
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
 
@@ -11453,6 +11652,58 @@ const PublicBookingView: React.FC<PublicBookingViewProps> = ({ barberIdFromUrl, 
             <br />
             Você será notificado pelo WhatsApp.
           </div>
+
+          {bookingBarber?.pixKey && (
+            <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-left space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <QrCode size={14} /> Chave PIX da Barbearia
+                </span>
+                <span className="text-[8px] font-mono uppercase bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full">
+                  {bookingBarber.pixKeyType?.toUpperCase() || "PIX"}
+                </span>
+              </div>
+              <p className="text-[10px] text-slate-300 font-mono font-bold select-all break-all">
+                {formatPixKeyDisplay(bookingBarber.pixKey, bookingBarber.pixKeyType || "phone")}
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  variant="cyan"
+                  className="w-full h-9 text-[9px] font-black uppercase tracking-wider flex items-center justify-center gap-1"
+                  onClick={() => setShowClientPixModal(true)}
+                >
+                  <QrCode size={12} /> VER QR CODE PIX
+                </Button>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  className="h-9 px-3 text-[9px] font-black uppercase tracking-wider"
+                  onClick={() => {
+                    navigator.clipboard.writeText(bookingBarber.pixKey);
+                    showToast("Chave PIX copiada!");
+                  }}
+                  title="Copiar Chave PIX"
+                >
+                  <Copy size={12} />
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {showClientPixModal && (
+            <PixPaymentModal
+              isOpen={showClientPixModal}
+              onClose={() => setShowClientPixModal(false)}
+              pixKey={bookingBarber?.pixKey}
+              pixKeyType={bookingBarber?.pixKeyType || "phone"}
+              beneficiaryName={bookingBarber?.pixBeneficiary || bookingBarber?.shopName || "Barbearia"}
+              city={bookingBarber?.pixCity || "FORTALEZA"}
+              bankName={bookingBarber?.pixBank}
+              amount={selectedService?.price}
+              description={`Corte: ${selectedService?.name || "Atendimento"}`}
+            />
+          )}
 
           <div className="space-y-2 pt-2">
             <Button

@@ -1,5 +1,6 @@
 
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { getActiveGeminiApiKey } from "./keyManagement";
 
 export class GeminiService {
   /**
@@ -7,7 +8,8 @@ export class GeminiService {
    */
   static async generateCampaignMessage(shopName: string, goal: string): Promise<string> {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = getActiveGeminiApiKey();
+      const ai = new GoogleGenAI({ apiKey });
       const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Você é um especialista em marketing de luxo para barbearias. A barbearia se chama ${shopName}. Crie uma mensagem de broadcast irresistível para o WhatsApp com o seguinte objetivo: ${goal}. Use emojis, seja direto e elegante. Não use campos dinâmicos além de [NOME DO CLIENTE].`,
@@ -23,7 +25,8 @@ export class GeminiService {
    */
   static async generateBusinessMessage(type: 'confirmation' | 'payment' | 'reminder', clientName: string, serviceName: string, time?: string, price?: number): Promise<string> {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = getActiveGeminiApiKey();
+      const ai = new GoogleGenAI({ apiKey });
       let prompt = "";
       
       if (type === 'confirmation') {
@@ -51,7 +54,8 @@ export class GeminiService {
    */
   static async getBusinessAdvice(dailyRevenue: number, monthlyRevenue: number, topService: string): Promise<string> {
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      const apiKey = getActiveGeminiApiKey();
+      const ai = new GoogleGenAI({ apiKey });
       const response: GenerateContentResponse = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: `Como consultor de negócios para barbearias, analise estes dados: Receita diária: R$ ${dailyRevenue}, Receita mensal: R$ ${monthlyRevenue}, Serviço mais vendido: ${topService}. Forneça 3 dicas curtas para aumentar o faturamento.`,

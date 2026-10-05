@@ -6,5 +6,7 @@
   "firestoreDatabaseId": "ai-studio-4ee3e6b6-97ba-4b85-b0e2-5b8b548ae47f",
   "storageBucket": "clean-hub-rh7sp.firebasestorage.app",
   "messagingSenderId": "214624482342",
-  "measurementId": ""
+  "measurementId": "",
+  "oAuthClientId": "214624482342-dc03ql63on4eelkt426pffmdffthjqcj.apps.googleusercontent.com",
+  "recaptchaSiteKey": ""
 }

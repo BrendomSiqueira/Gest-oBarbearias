@@ -104,6 +104,8 @@ export interface UnavailableSlot {
   reason?: string;
 }
 
+export type PixKeyType = 'cpf' | 'cnpj' | 'phone' | 'email' | 'random';
+
 export interface UserSession {
   username: string;
   shopName: string;
@@ -117,7 +119,15 @@ export interface UserSession {
   unavailableSlots?: UnavailableSlot[];
   autoCancelExpired?: boolean;
   autoCancelMinutes?: number;
+  role?: "admin" | "manager" | "operator" | "client";
+  pixKey?: string;
+  pixKeyType?: PixKeyType;
+  pixBeneficiary?: string;
+  pixCity?: string;
+  pixBank?: string;
 }
+
+export type UserRole = "admin" | "manager" | "operator" | "client";
 
 export enum Tab {
   Dashboard = 'Painel',

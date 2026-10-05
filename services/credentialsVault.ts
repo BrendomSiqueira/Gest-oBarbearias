@@ -22,6 +22,8 @@ export interface StoredAccount {
   cpf?: string;
   updatedAt: string;
   isMaster?: boolean;
+  role?: "admin" | "manager" | "operator" | "client";
+  emailVerified?: boolean;
 }
 
 const VAULT_STORAGE_KEY = "simdb_registered_users";
@@ -143,6 +145,8 @@ export async function seedDefaultAccounts(): Promise<void> {
           phone: seed.phone,
           updatedAt: new Date().toISOString(),
           isMaster: true,
+          role: "admin",
+          emailVerified: true,
         };
         modified = true;
       }
@@ -166,11 +170,23 @@ export async function saveAccountToVault(data: {
   shopName?: string;
   phone?: string;
   cpf?: string;
+  role?: "admin" | "manager" | "operator" | "client";
+  emailVerified?: boolean;
 }): Promise<void> {
   const cleanEmail = data.email.trim().toLowerCase();
   const username = (data.username || cleanEmail.split("@")[0] || "Usuário").trim();
   const passHash = data.passHash || (data.passwordPlain ? await hashPassword(data.passwordPlain) : await hashPassword("372087"));
   const updatedAt = new Date().toISOString();
+
+  // Determine role: default master users are admin, others default to manager or operator
+  const isMaster =
+    cleanEmail.includes("matheus") ||
+    cleanEmail.includes("admin") ||
+    cleanEmail.includes("brendom") ||
+    data.uid === "matheus_farias";
+
+  const assignedRole: "admin" | "manager" | "operator" | "client" =
+    data.role || (isMaster ? "admin" : "manager");
 
   const account: StoredAccount = {
     uid: data.uid,
@@ -183,6 +199,9 @@ export async function saveAccountToVault(data: {
     phone: data.phone || "",
     cpf: data.cpf || "",
     updatedAt,
+    isMaster,
+    role: assignedRole,
+    emailVerified: data.emailVerified ?? true,
   };
 
   // 1. Salva no localStorage sob múltiplos aliases (email, username, etc.)

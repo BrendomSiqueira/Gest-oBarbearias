@@ -29,7 +29,10 @@ export type SecurityEventType =
   | "two_factor_verified"
   | "two_factor_failed"
   | "audit_scan"
-  | "all_tokens_revoked";
+  | "all_tokens_revoked"
+  | "gemini_key_updated"
+  | "gemini_key_removed"
+  | "crypto_keys_rotated";
 
 export interface SecurityLogEntry {
   id?: string;

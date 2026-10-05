@@ -87,6 +87,11 @@ service cloud.firestore {
              (!('unavailableSlots' in data) || (data.unavailableSlots is list && data.unavailableSlots.size() <= 500)) &&
              (!('migrated' in data) || (data.migrated is bool)) &&
              (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 60)) &&
+             (!('pixKey' in data) || (data.pixKey is string && data.pixKey.size() <= 100)) &&
+             (!('pixKeyType' in data) || (data.pixKeyType is string && data.pixKeyType.size() <= 20)) &&
+             (!('pixBeneficiary' in data) || (data.pixBeneficiary is string && data.pixBeneficiary.size() <= 100)) &&
+             (!('pixCity' in data) || (data.pixCity is string && data.pixCity.size() <= 60)) &&
+             (!('pixBank' in data) || (data.pixBank is string && data.pixBank.size() <= 60)) &&
              (!('role' in data) || isHardcodedAdmin());
     }
 
